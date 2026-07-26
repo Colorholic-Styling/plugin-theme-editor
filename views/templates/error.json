@@ -1,0 +1,9 @@
+{
+  "sections": {
+    "main": {
+      "type": "error"
+    }
+  },
+  "order": ["main"]
+}
+

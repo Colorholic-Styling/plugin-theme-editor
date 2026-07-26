@@ -1,0 +1,27 @@
+{
+  "id": "theme-editor",
+  "name": "Theme Editor",
+  "version": "0.1.0",
+  "nav": [
+    {
+      "label": "Theme Editor",
+      "href": "editor",
+      "roles": ["admin", "editor"]
+    }
+  ],
+  "permissions": [
+    {
+      "value": "theme-editor:view",
+      "label": "Theme editor: preview themes and pages"
+    },
+    {
+      "value": "theme-editor:write",
+      "label": "Theme editor: update page content"
+    }
+  ],
+  "contentTypes": {
+    "readTypes": ["*"],
+    "writeTypes": ["*"]
+  }
+}
+

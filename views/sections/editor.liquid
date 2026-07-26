@@ -1,0 +1,134 @@
+<div class="px-4 py-5 sm:px-6 sm:py-8 lg:px-8">
+  <div class="flex items-center justify-between gap-4 mb-4">
+    <div>
+      <h1 class="text-2xl font-bold text-gray-900">{{ title }}</h1>
+      <p class="mt-1 text-sm text-gray-500">{{ description }}</p>
+    </div>
+    {% if nativeEditHref != blank %}
+      <a href="{{ nativeEditHref }}"
+         class="inline-flex h-10 items-center justify-center rounded-lg border border-gray-300 bg-white px-4 text-sm font-semibold text-gray-700 hover:bg-gray-50">
+        Native editor
+      </a>
+    {% endif %}
+  </div>
+
+  {% if flash != blank %}
+    <p class="mb-4 rounded-lg border border-emerald-200 bg-emerald-50 px-4 py-3 text-sm text-emerald-700">{{ flash }}</p>
+  {% endif %}
+
+  <form method="get" action="{{ loadAction }}" class="mb-4 flex flex-wrap items-end gap-3 rounded-xl border border-gray-200 bg-white p-4 shadow-sm">
+    <label class="min-w-0 flex-1" style="min-width:16rem">
+      <span class="mb-1 block text-sm font-medium text-gray-700">CMS page</span>
+      <select name="page_id" class="block h-10 w-full rounded-lg border border-gray-300 bg-white px-3 text-sm">
+        {% for page in pages %}
+          <option value="{{ page.id }}"{% if page.selected %} selected{% endif %}>{{ page.label }}</option>
+        {% endfor %}
+      </select>
+    </label>
+    <label style="min-width:10rem">
+      <span class="mb-1 block text-sm font-medium text-gray-700">Content language</span>
+      <select name="language" class="block h-10 w-full rounded-lg border border-gray-300 bg-white px-3 text-sm">
+        {% for option in languages %}
+          <option value="{{ option.code }}"{% if option.selected %} selected{% endif %}>{{ option.code }}</option>
+        {% endfor %}
+      </select>
+    </label>
+    <button class="inline-flex h-10 items-center justify-center rounded-lg bg-indigo-600 px-4 text-sm font-semibold text-white hover:bg-indigo-700" type="submit">
+      Load
+    </button>
+  </form>
+
+  {% if hasPages %}
+    <div class="flex min-w-0 flex-col gap-4 xl:flex-row">
+      <div class="min-w-0 flex-1 rounded-xl border border-gray-200 bg-gray-100 p-2 shadow-sm">
+        <div class="mb-2 flex items-center justify-between gap-3 px-2">
+          <p class="text-xs font-semibold uppercase tracking-wide text-gray-500">Theme preview</p>
+          <p class="truncate text-xs text-gray-500">{{ selectedPage.name }}</p>
+        </div>
+        <iframe
+          title="Theme preview for {{ selectedPage.name }}"
+          src="{{ previewHref }}"
+          class="block w-full rounded-lg border border-gray-300 bg-white"
+          style="height:72vh;min-height:32rem">
+        </iframe>
+      </div>
+
+      <aside class="min-w-0 shrink-0 rounded-xl border border-gray-200 bg-white shadow-sm xl:sticky xl:top-4 xl:self-start" style="width:100%;max-width:26rem">
+        <div class="border-b border-gray-200 p-4">
+          <h2 class="text-lg font-bold text-gray-900">Settings</h2>
+          <p class="mt-1 text-sm text-gray-500">Choose the page or one of its blocks, then edit the stored lect values.</p>
+        </div>
+
+        <nav class="border-b border-gray-200 p-3" aria-label="Editable theme sections">
+          <a href="{{ pageSettingsHref }}"
+             class="mb-1 block rounded-lg px-3 py-2 text-sm font-semibold{% if pageSelected %} bg-indigo-50 text-indigo-700{% else %} text-gray-700 hover:bg-gray-50{% endif %}">
+            Page values
+          </a>
+          {% for block in blocks %}
+            <a href="{{ block.href }}"
+               class="mb-1 block rounded-lg px-3 py-2 text-sm{% if block.selected %} bg-indigo-50 font-semibold text-indigo-700{% else %} text-gray-700 hover:bg-gray-50{% endif %}">
+              <span class="block truncate">{{ block.label }}</span>
+              <span class="text-xs text-gray-400">{{ block.type }} · block {{ block.index | plus: 1 }}</span>
+            </a>
+          {% endfor %}
+        </nav>
+
+        <form method="post" action="{{ saveAction }}">
+          <input type="hidden" name="page_id" value="{{ selectedPage.id }}">
+          <input type="hidden" name="language" value="{{ language }}">
+          {% if selectedBlock != blank or selectedBlock == 0 %}
+            <input type="hidden" name="block" value="{{ selectedBlock }}">
+          {% endif %}
+
+          <div class="overflow-y-auto p-4" style="max-height:52vh">
+            <h3 class="mb-3 text-sm font-bold text-gray-900">{{ selectedLabel }}</h3>
+            {% for group in fieldGroups %}
+              <fieldset class="mb-5 min-w-0">
+                <legend class="mb-2 text-xs font-semibold uppercase tracking-wide text-gray-500">{{ group.label }}</legend>
+                <div class="space-y-3">
+                  {% for field in group.fields %}
+                    <label class="block min-w-0">
+                      <span class="mb-1 flex items-center justify-between gap-2 text-sm font-medium text-gray-700">
+                        <span class="truncate">{{ field.label }}</span>
+                        <span class="shrink-0 rounded bg-gray-100 px-1.5 py-0.5 text-xs font-medium text-gray-500">{{ field.badge }}</span>
+                      </span>
+                      {% if field.multiline %}
+                        <textarea name="{{ field.inputName }}" rows="4"
+                                  class="block min-w-0 w-full max-w-full rounded-lg border border-gray-300 px-3 py-2 text-sm focus:border-transparent focus:outline-none focus:ring-2 focus:ring-indigo-500"
+                                  {% if field.readOnly or canEdit == false %}readonly{% endif %}>{{ field.value }}</textarea>
+                      {% else %}
+                        <input name="{{ field.inputName }}" value="{{ field.value }}"
+                               class="block h-10 min-w-0 w-full max-w-full rounded-lg border border-gray-300 px-3 text-sm focus:border-transparent focus:outline-none focus:ring-2 focus:ring-indigo-500"
+                               {% if field.readOnly or canEdit == false %}readonly{% endif %}>
+                      {% endif %}
+                      <span class="mt-1 block truncate font-mono text-xs text-gray-400">{{ field.path }}</span>
+                    </label>
+                  {% endfor %}
+                </div>
+              </fieldset>
+            {% endfor %}
+            {% unless hasFields %}
+              <p class="rounded-lg bg-gray-50 px-3 py-4 text-sm text-gray-500">This selection has no scalar values to edit yet.</p>
+            {% endunless %}
+          </div>
+
+          <div class="flex items-center gap-3 border-t border-gray-200 p-4">
+            {% if canEdit %}
+              <button type="submit" class="inline-flex h-10 flex-1 items-center justify-center rounded-lg bg-indigo-600 px-4 text-sm font-semibold text-white hover:bg-indigo-700">
+                Save changes
+              </button>
+            {% else %}
+              <span class="text-sm text-gray-500">Read-only access</span>
+            {% endif %}
+          </div>
+        </form>
+      </aside>
+    </div>
+  {% else %}
+    <div class="rounded-xl border border-amber-200 bg-amber-50 p-6">
+      <h2 class="font-semibold text-amber-900">No readable CMS pages</h2>
+      <p class="mt-2 text-sm text-amber-700">Approve at least one page type for Theme Editor under Plugins → Page types.</p>
+    </div>
+  {% endif %}
+</div>
+

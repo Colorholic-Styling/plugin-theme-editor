@@ -1,0 +1,32 @@
+name = "worker-cms-plugin-theme-editor"
+main = "src/index.ts"
+compatibility_date = "2026-07-14"
+compatibility_flags = ["nodejs_compat", "global_fetch_strictly_public"]
+
+# Plugin admin views live directly under views/. `npm run theme:sync` also
+# stages the configured development theme under views/theme/. The runtime only
+# knows the Fetcher contract; an R2-backed implementation can replace it later.
+[assets]
+directory = "./views"
+binding = "VIEWS"
+run_worker_first = true
+
+[version_metadata]
+binding = "CF_VERSION_METADATA"
+
+[vars]
+CMS_URL = "http://localhost:8787"
+THEME_NAME = "Colorholic Styling"
+THEME_SITE_TITLE = "Colorholic Styling"
+THEME_LANGUAGES = "zh-hant,en"
+THEME_BOOKING_URL = "https://www.fresha.com/zh-HK/a/colorholic-stylingxi-se-sheng-zhuang-xue-yuan-kowloon-flat-e-21-f-po-shau-centre-115-how-ming-street-yiqcq1bx"
+
+# Set this plugin's dedicated CMS registration secret with:
+#   wrangler secret put PLUGIN_SECRET
+#
+# For multi-tenant deployment bind a TENANTS KV namespace. Local development
+# can use CMS_URL + PLUGIN_SECRET until the registry is configured.
+# [[kv_namespaces]]
+# binding = "TENANTS"
+# id = "REPLACE_WITH_THEME_EDITOR_TENANTS_KV_ID"
+
