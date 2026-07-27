@@ -67,6 +67,18 @@
     saveChanges();
   });
 
+  // Only intercept when the frame can be redrawn here; otherwise the plain
+  // POST and its reload remain the way a toggle takes effect.
+  root.addEventListener('submit', function (event) {
+    var target = event.target;
+    if (!target || typeof target.closest !== 'function') return;
+    var visibility = target.closest('[data-theme-editor-visibility]');
+    if (!visibility || !root.contains(visibility)) return;
+    if (typeof window.fetch !== 'function' || !frameRenderer()) return;
+    event.preventDefault();
+    toggleSectionVisibility(visibility);
+  });
+
   root.addEventListener('click', function (event) {
     var target = event.target;
     if (!target || typeof target.closest !== 'function') return;
@@ -88,6 +100,15 @@
     preview.addEventListener('load', bindPreview);
     bindPreview();
   }
+
+  // The frame draws itself after fetching its data, so the selection has to be
+  // reapplied once there is markup to apply it to.
+  window.addEventListener('message', function (event) {
+    if (event.origin !== window.location.origin) return;
+    if (!isRecord(event.data) || event.data.type !== 'theme-editor-preview-ready') return;
+    bindPreview();
+    selectBlockInPreview(blockFromValue(selectedBlockInput.value));
+  });
 
   window.addEventListener('popstate', function () {
     var params = new URL(window.location.href).searchParams;
@@ -230,14 +251,56 @@
    * redraw needs no request. Reloading stays the fallback for as long as that
    * asset is unapproved or still starting up.
    */
-  function frameRenderer() {
-    if (!preview) return null;
+  async function toggleSectionVisibility(form) {
+    var button = form.querySelector('[data-theme-editor-visibility-button]');
+    if (button) button.disabled = true;
     try {
-      var api = preview.contentWindow && preview.contentWindow.themeEditorPreview;
-      return api && typeof api.render === 'function' ? api : null;
+      var response = await window.fetch(form.action, {
+        method: 'POST',
+        body: new FormData(form),
+        headers: {
+          accept: 'application/json',
+          'x-requested-with': 'XMLHttpRequest'
+        },
+        credentials: 'same-origin'
+      });
+      var payload = await responsePayload(response);
+      if (!response.ok || !isRecord(payload) || payload.ok !== true) throw new Error('unavailable');
+
+      var section = form.getAttribute('data-section') || '';
+      var hidden = Array.isArray(payload.hidden) ? payload.hidden : [];
+      applyVisibility(form, hidden.indexOf(section) !== -1);
+      if (button) button.disabled = false;
+      renderPreview({ hidden: hidden });
     } catch (_error) {
-      return null;
+      // A failed toggle still has to say so, and the server round-trip is
+      // already able to: let the browser submit the form for real.
+      if (button) button.disabled = false;
+      form.submit();
     }
+  }
+
+  function applyVisibility(form, hidden) {
+    var row = form.parentElement;
+    var value = form.querySelector('[data-theme-editor-visibility-value]');
+    var button = form.querySelector('[data-theme-editor-visibility-button]');
+    var flag = row && row.querySelector('[data-theme-editor-hidden-flag]');
+    var section = form.getAttribute('data-section') || '';
+
+    if (value) value.value = hidden ? '0' : '1';
+    if (button) {
+      button.textContent = hidden ? 'Show' : 'Hide';
+      button.title = (hidden ? 'Show' : 'Hide') + ' the ' + section
+        + ' section in every page using this template';
+    }
+    if (flag) flag.hidden = !hidden;
+  }
+
+  function frameRenderer() {
+    // The renderer runs here, in the editor page, because the host strips
+    // scripts out of the preview document itself.
+    var api = window.themeEditorPreview;
+    return api && typeof api.render === 'function' ? api : null;
   }
 
   function renderPreview(update) {

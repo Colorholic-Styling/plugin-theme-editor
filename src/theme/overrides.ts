@@ -35,20 +35,22 @@ export async function hiddenSections(
   return new Set(parseHidden(stored));
 }
 
+/** Returns exactly what was stored, so a caller cannot report a different set. */
 export async function setSectionHidden(
   env: PluginEnv,
   themeId: string,
   templateId: string,
   section: string,
   hidden: boolean,
-): Promise<Set<string>> {
+): Promise<string[]> {
   if (!env.THEME_OVERRIDES) throw new MissingOverrideStoreError();
   const key = overrideKey(env, themeId, templateId);
   const current = new Set(parseHidden(await env.THEME_OVERRIDES.get(key)));
   if (hidden) current.add(section);
   else current.delete(section);
-  await env.THEME_OVERRIDES.put(key, JSON.stringify({ hidden: [...current].sort() }));
-  return current;
+  const stored = [...current].sort();
+  await env.THEME_OVERRIDES.put(key, JSON.stringify({ hidden: stored }));
+  return stored;
 }
 
 /**

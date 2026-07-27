@@ -3,5 +3,5 @@
   "compilerOptions": {
     "lib": ["ES2022", "DOM"]
   },
-  "include": ["src/browser/**/*.ts", "src/theme/**/*.ts", "src/types.ts", "src/themes.ts", "src/editor-model.ts", "test/browser-preview.test.ts"]
+  "include": ["src/browser/**/*.ts", "src/theme/**/*.ts", "src/types.ts", "src/themes.ts", "src/editor-model.ts", "test/browser-preview.test.ts", "test/editor-client.test.ts"]
 }

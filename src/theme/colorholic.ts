@@ -75,13 +75,17 @@ export interface ThemeRuntime {
   assetVersion: string;
 }
 
-export function themeRuntime(env: PluginEnv, store: ThemeStore): ThemeRuntime {
+/** The runtime minus its store, which is what the Worker sends the browser. */
+export function themeRuntimeSettings(env: PluginEnv): Omit<ThemeRuntime, 'store'> {
   return {
-    store,
     siteTitle: env.THEME_SITE_TITLE || '',
     bookingUrl: env.THEME_BOOKING_URL || '',
     assetVersion: env.CF_VERSION_METADATA?.id?.slice(0, 8) || 'dev',
   };
+}
+
+export function themeRuntime(env: PluginEnv, store: ThemeStore): ThemeRuntime {
+  return { ...themeRuntimeSettings(env), store };
 }
 
 export function previewThemeStore(base: ThemeStore): ThemeStore {

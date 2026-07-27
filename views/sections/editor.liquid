@@ -65,6 +65,8 @@
         </div>
         <iframe
           data-theme-editor-preview
+          data-theme-editor-preview-data="{{ previewDataHref }}"
+          data-theme-editor-preview-bundle="{{ previewBundleHref }}"
           title="Theme preview for {{ selectedPage.name }}"
           src="{{ previewHref }}"
           class="block w-full rounded-lg border border-gray-300 bg-white"
@@ -101,17 +103,20 @@
                        data-block="{{ block.index }}"
                        class="min-w-0 flex-1 block rounded-lg px-3 py-2 text-sm{% if block.selected %} bg-indigo-50 font-semibold text-indigo-700{% else %} text-gray-700 hover:bg-gray-50{% endif %}">
                       <span class="block truncate">{{ block.label }}</span>
-                      <span class="text-xs text-gray-400">{{ block.type }} · block {{ block.index | plus: 1 }}{% if block.sectionHidden %} · hidden{% endif %}</span>
+                      <span class="text-xs text-gray-400">{{ block.type }} · block {{ block.index | plus: 1 }}<span data-theme-editor-hidden-flag{% unless block.sectionHidden %} hidden{% endunless %}> · hidden</span></span>
                     </a>
                     {% if canEdit and block.sectionKey != blank %}
-                      <form method="post" action="{{ visibilityAction }}" class="shrink-0">
+                      <form method="post" action="{{ visibilityAction }}" class="shrink-0"
+                            data-theme-editor-visibility
+                            data-section="{{ block.sectionKey }}">
                         <input type="hidden" name="theme" value="{{ themeId }}">
                         <input type="hidden" name="template" value="{{ templateId }}">
                         <input type="hidden" name="section" value="{{ block.sectionKey }}">
                         <input type="hidden" name="page_id" value="{{ selectedPage.id }}">
                         <input type="hidden" name="language" value="{{ language }}">
-                        <input type="hidden" name="hidden" value="{% if block.sectionHidden %}0{% else %}1{% endif %}">
+                        <input type="hidden" name="hidden" value="{% if block.sectionHidden %}0{% else %}1{% endif %}" data-theme-editor-visibility-value>
                         <button type="submit"
+                                data-theme-editor-visibility-button
                                 title="{% if block.sectionHidden %}Show{% else %}Hide{% endif %} the {{ block.sectionKey }} section in every page using this template"
                                 class="inline-flex h-10 shrink-0 items-center justify-center rounded-lg border border-gray-300 bg-white px-3 text-sm font-semibold text-gray-700 hover:bg-gray-50">{%- if block.sectionHidden -%}Show{%- else -%}Hide{%- endif -%}</button>
                       </form>
@@ -127,17 +132,20 @@
                     <div class="mb-1 flex items-center gap-2">
                       <span class="min-w-0 flex-1 block rounded-lg px-3 py-2 text-sm text-gray-700">
                         <span class="block truncate">{{ section.label }}</span>
-                        <span class="text-xs text-gray-400">{{ section.type }}{% if section.hidden %} · hidden{% endif %}</span>
+                        <span class="text-xs text-gray-400">{{ section.type }}<span data-theme-editor-hidden-flag{% unless section.hidden %} hidden{% endunless %}> · hidden</span></span>
                       </span>
                       {% if canEdit %}
-                        <form method="post" action="{{ visibilityAction }}" class="shrink-0">
+                        <form method="post" action="{{ visibilityAction }}" class="shrink-0"
+                              data-theme-editor-visibility
+                              data-section="{{ section.key }}">
                           <input type="hidden" name="theme" value="{{ themeId }}">
                           <input type="hidden" name="template" value="{{ templateId }}">
                           <input type="hidden" name="section" value="{{ section.key }}">
                           <input type="hidden" name="page_id" value="{{ selectedPage.id }}">
                           <input type="hidden" name="language" value="{{ language }}">
-                          <input type="hidden" name="hidden" value="{% if section.hidden %}0{% else %}1{% endif %}">
+                          <input type="hidden" name="hidden" value="{% if section.hidden %}0{% else %}1{% endif %}" data-theme-editor-visibility-value>
                           <button type="submit"
+                                  data-theme-editor-visibility-button
                                   title="{% if section.hidden %}Show{% else %}Hide{% endif %} the {{ section.key }} section in every page using this template"
                                   class="inline-flex h-10 shrink-0 items-center justify-center rounded-lg border border-gray-300 bg-white px-3 text-sm font-semibold text-gray-700 hover:bg-gray-50">{%- if section.hidden -%}Show{%- else -%}Hide{%- endif -%}</button>
                         </form>
@@ -241,4 +249,5 @@
     </div>
   {% endif %}
 </div>
+<script src="{{ previewAssetHref }}" defer></script>
 <script src="{{ assetHref }}" defer></script>

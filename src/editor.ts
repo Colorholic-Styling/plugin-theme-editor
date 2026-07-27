@@ -15,8 +15,7 @@ import {
   editorFields,
   selectedBlockFrom,
 } from './editor-model';
-import { previewThemeStore, renderThemePreview, themeRuntime } from './theme/colorholic';
-import { AssetThemeStore } from './theme/store';
+import { themeRuntimeSettings } from './theme/colorholic';
 import {
   hiddenSections,
   MissingOverrideStoreError,
@@ -57,7 +56,8 @@ export async function handleThemeEditorAdmin(
         headers: { 'cache-control': 'no-store' },
       });
     }
-    return preview(request, env, url, theme);
+    if (segments[1] === 'data') return previewData(env, url, theme);
+    return preview();
   }
 
   if (section === 'visibility') {
@@ -190,6 +190,11 @@ async function editor(
     }) : '{}',
     saveAction: `${ADMIN_BASE}/save`,
     assetHref: `${ADMIN_BASE}/assets/theme-editor.js`,
+    previewAssetHref: `${ADMIN_BASE}/assets/theme-preview.js`,
+    previewDataHref: selectedPage
+      ? `${ADMIN_BASE}/preview/data?theme=${encodeURIComponent(theme.id)}&template=${encodeURIComponent(selectedTemplate.id)}&page_id=${selectedPage.id}&language=${encodeURIComponent(language)}${selectedBlock === null ? '' : `&block=${selectedBlock}`}`
+      : '',
+    previewBundleHref: `${ADMIN_BASE}/preview/bundle?theme=${encodeURIComponent(theme.id)}`,
     previewHref: selectedPage
       ? `${ADMIN_BASE}/preview?theme=${encodeURIComponent(theme.id)}&template=${encodeURIComponent(selectedTemplate.id)}&page_id=${selectedPage.id}&language=${encodeURIComponent(language)}${selectedBlock === null ? '' : `&block=${selectedBlock}`}`
       : '',
@@ -198,14 +203,43 @@ async function editor(
   });
 }
 
-async function preview(
-  _request: Request,
+/**
+ * An empty document for the editor page to draw into. It carries no script of
+ * its own on purpose: the host strips every `<script>` from a plugin HTML
+ * document and only restores approved ones inside a client view, so nothing
+ * here could ever run. The renderer lives in the editor page instead and writes
+ * the theme into this frame across the same origin.
+ */
+function preview(): Response {
+  return new Response(`<!doctype html>
+<html>
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Theme preview</title>
+<link rel="stylesheet" href="${ADMIN_BASE}/theme/assets/site.css">
+<style>.theme-preview-status{margin:0;padding:24px;font:500 14px/1.5 system-ui;color:#6b7280}</style>
+</head>
+<body>
+<p class="theme-preview-status" data-theme-preview-status>Loading preview…</p>
+</body>
+</html>`, {
+    headers: {
+      'content-type': 'text/html; charset=utf-8',
+      'cache-control': 'no-store',
+      'x-cms-frame': '1',
+    },
+  });
+}
+
+/** Everything the browser renderer needs to draw the page, as JSON. */
+async function previewData(
   env: PluginEnv,
   url: URL,
   theme: ThemeDefinition,
 ): Promise<Response> {
   const id = positiveInt(url.searchParams.get('page_id'));
-  if (!id) return new Response('Select a page to preview.', { status: 400 });
+  if (!id) return Response.json({ error: 'page_id required' }, { status: 400 });
 
   const [meta, page] = await Promise.all([contentMeta(env), cmsClient(env).get(id)]);
   const templates = await themeTemplates(env, theme);
@@ -214,7 +248,7 @@ async function preview(
     url.searchParams.get('template'),
     page.page_type ?? '',
   );
-  if (!selectedTemplate) return new Response('Theme template not found.', { status: 404 });
+  if (!selectedTemplate) return Response.json({ error: 'template not found' }, { status: 404 });
   const language = selectedLanguage(url, meta.languages, meta.default_language);
   const selectedBlock = selectedBlockFrom(url, page);
   const cms = cmsClient(env);
@@ -238,41 +272,12 @@ async function preview(
     editorHref: `${themeEditorHref(theme, selectedTemplate.id)}&page_id=${page.id}&language=${encodeURIComponent(language)}`,
     selectedBlock,
   };
-  const hidden = await hiddenSections(env, theme.id, selectedTemplate.id);
-  const runtime = themeRuntime(env, previewThemeStore(new AssetThemeStore(env.VIEWS, theme.assetPrefix)));
-  const html = theme.renderer === 'colorholic'
-    ? await renderThemePreview(runtime, renderContext, selectedTemplate, hidden)
-    : '';
-  return new Response(withBrowserRenderer(html, {
+  return Response.json({
     context: renderContext,
     template: selectedTemplate,
-    hidden: [...hidden],
-    runtime: { siteTitle: runtime.siteTitle, bookingUrl: runtime.bookingUrl, assetVersion: runtime.assetVersion },
-    bundleHref: `${ADMIN_BASE}/preview/bundle?theme=${encodeURIComponent(theme.id)}`,
-  }), {
-    headers: {
-      'content-type': 'text/html; charset=utf-8',
-      'cache-control': 'no-store',
-      'x-cms-frame': '1',
-    },
-  });
-}
-
-/**
- * Hands the browser renderer everything the Worker just used, so it can redraw
- * the same page locally. The server-rendered HTML above stays the first paint:
- * it is what shows while this loads, and all there is if the asset is not
- * approved.
- */
-function withBrowserRenderer(html: string, bootstrap: unknown): string {
-  if (!html.includes('</body>')) return html;
-  // `</script>` anywhere inside the JSON would close the tag early, so keep `<`
-  // out of the text entirely.
-  const payload = JSON.stringify(bootstrap).replaceAll('<', '\\u003c');
-  return html.replace('</body>', ''
-    + `<script type="application/json" data-theme-preview-bootstrap>${payload}</script>`
-    + `<script src="${ADMIN_BASE}/assets/theme-preview.js" defer></script>`
-    + '</body>');
+    hidden: [...await hiddenSections(env, theme.id, selectedTemplate.id)],
+    runtime: themeRuntimeSettings(env),
+  }, { headers: { 'cache-control': 'no-store' } });
 }
 
 /**
@@ -299,11 +304,21 @@ async function toggleSectionVisibility(request: Request, env: PluginEnv): Promis
 
   const hide = formString(form.get('hidden')) === '1';
   let flash = hide ? `Hidden ${sectionKey}` : `Shown ${sectionKey}`;
+  let hidden: string[] = [];
   try {
-    await setSectionHidden(env, theme.id, selectedTemplate.id, sectionKey, hide);
+    hidden = await setSectionHidden(env, theme.id, selectedTemplate.id, sectionKey, hide);
   } catch (error) {
     if (!(error instanceof MissingOverrideStoreError)) throw error;
+    if (acceptsJson(request)) {
+      return Response.json({ ok: false, message: error.message }, { status: 503 });
+    }
     flash = error.message;
+  }
+
+  // The editor page redraws the frame from this set, so a toggle costs no
+  // reload of either the page or the preview.
+  if (acceptsJson(request)) {
+    return Response.json({ ok: true, section: sectionKey, hidden, message: flash });
   }
 
   // Deliberately no `block`: toggling visibility is not a request to edit that

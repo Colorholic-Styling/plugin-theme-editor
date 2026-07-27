@@ -13,6 +13,6 @@
     "noEmit": true
   },
   "include": ["src/**/*.ts", "test/**/*.ts", "scripts/**/*.mjs"],
-  "exclude": ["src/browser/**/*.ts", "test/browser-preview.test.ts"]
+  "exclude": ["src/browser/**/*.ts", "test/browser-preview.test.ts", "test/editor-client.test.ts"]
 }
 

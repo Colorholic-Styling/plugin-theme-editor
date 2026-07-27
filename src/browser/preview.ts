@@ -5,20 +5,29 @@ import type { ThemeTemplate } from '../theme/templates';
 import type { ThemeRenderContext } from '../types';
 
 /**
- * Browser half of the preview. It imports the Worker's renderer rather than
- * reimplementing it, so the two cannot drift: the only things that differ are
- * where theme files come from and where the HTML is put.
+ * The preview renderer. The Worker serves an empty frame and this draws the
+ * page into it: the CMS page arrives as JSON, the theme's template and Liquid
+ * partials as a bundle, and every render — first and subsequent — happens here.
  *
- * The server still renders the first paint, which keeps the preview correct
- * when this asset is unapproved or still loading. Once it is running, editing a
- * block re-renders here and reaches no network at all.
+ * It imports the Worker's renderer rather than reimplementing it, so the two
+ * cannot drift; the only difference is that theme files come from memory
+ * instead of an asset binding.
+ *
+ * This runs in the editor page, not in the frame. The host strips every
+ * `<script>` from a plugin HTML document and only lets an approved `<script
+ * src>` survive inside a client view, so a renderer shipped in the frame could
+ * never execute. The frame is same-origin, so the editor page writes into it.
  */
 interface Bootstrap {
+  dataHref: string;
+  bundleHref: string;
+}
+
+interface PreviewData {
   context: ThemeRenderContext;
   template: ThemeTemplate;
   hidden: string[];
   runtime: Omit<ThemeRuntime, 'store'>;
-  bundleHref: string;
 }
 
 export interface PreviewUpdate {
@@ -53,41 +62,87 @@ function normalize(path: string): string {
   return path.startsWith('/') ? path : `/${path}`;
 }
 
+function frame(): HTMLIFrameElement | null {
+  return document.querySelector('[data-theme-editor-preview]');
+}
+
 function bootstrap(): Bootstrap | null {
-  const source = document.querySelector('[data-theme-preview-bootstrap]');
-  if (!source) return null;
-  try {
-    return JSON.parse(source.textContent || '') as Bootstrap;
-  } catch {
-    return null;
-  }
+  const host = frame();
+  const dataHref = host?.getAttribute('data-theme-editor-preview-data') || '';
+  const bundleHref = host?.getAttribute('data-theme-editor-preview-bundle') || '';
+  return dataHref && bundleHref ? { dataHref, bundleHref } : null;
+}
+
+/** Resolves once the frame has a document this can write into. */
+function frameDocument(host: HTMLIFrameElement): Promise<Document> {
+  return new Promise((resolve, reject) => {
+    const ready = (): boolean => {
+      const doc = host.contentDocument;
+      if (!doc || doc.readyState === 'loading') return false;
+      resolve(doc);
+      return true;
+    };
+    if (ready()) return;
+    host.addEventListener('load', () => {
+      const doc = host.contentDocument;
+      if (doc) resolve(doc);
+      else reject(new Error('The preview frame is not readable.'));
+    }, { once: true });
+  });
 }
 
 /**
- * Only the document's body and title are replaced. Swapping the whole document
- * would discard this script along with the head's stylesheet, costing a
- * re-fetch of exactly what a local re-render exists to avoid.
+ * The first render writes the whole document so the theme's own `<head>` is
+ * installed; later renders replace the body alone, which keeps the stylesheet
+ * from being refetched and the frame's scroll position from jumping.
  */
-function apply(html: string): void {
+function apply(doc: Document, html: string, first: boolean): void {
+  if (first) {
+    doc.open();
+    doc.write(html);
+    doc.close();
+    return;
+  }
   const parsed = new DOMParser().parseFromString(html, 'text/html');
-  document.title = parsed.title;
-  document.body.className = parsed.body.className;
-  document.body.innerHTML = parsed.body.innerHTML;
+  doc.title = parsed.title;
+  doc.body.className = parsed.body.className;
+  doc.body.innerHTML = parsed.body.innerHTML;
+}
+
+function fail(message: string): void {
+  const status = frame()?.contentDocument?.querySelector('[data-theme-preview-status]');
+  if (status) status.textContent = message;
+}
+
+async function json<T>(href: string): Promise<T> {
+  const response = await fetch(href, { headers: { accept: 'application/json' } });
+  if (!response.ok) throw new Error(`${href} responded ${response.status}`);
+  return await response.json() as T;
 }
 
 async function start(): Promise<void> {
   const config = bootstrap();
-  if (!config) return;
+  const host = frame();
+  if (!config || !host) return;
 
-  const response = await fetch(config.bundleHref, { headers: { accept: 'application/json' } });
-  if (!response.ok) return;
-  const runtime: ThemeRuntime = {
-    ...config.runtime,
-    store: new MemoryThemeStore(await response.json() as Record<string, string>),
-  };
+  let data: PreviewData;
+  let files: Record<string, string>;
+  let doc: Document;
+  try {
+    [data, files, doc] = await Promise.all([
+      json<PreviewData>(config.dataHref),
+      json<Record<string, string>>(config.bundleHref),
+      frameDocument(host),
+    ]);
+  } catch (error) {
+    fail(error instanceof Error ? error.message : 'The preview could not be loaded.');
+    return;
+  }
 
-  let context = config.context;
-  let hidden = new Set(config.hidden);
+  const runtime: ThemeRuntime = { ...data.runtime, store: new MemoryThemeStore(files) };
+  let context = data.context;
+  let hidden = new Set(data.hidden);
+  let painted = false;
 
   const render = async (update: PreviewUpdate = {}): Promise<void> => {
     const base = update.lect ?? context.page.lect ?? {};
@@ -98,13 +153,23 @@ async function start(): Promise<void> {
       selectedBlock: update.selectedBlock === undefined ? context.selectedBlock : update.selectedBlock,
     };
     if (update.hidden) hidden = new Set(update.hidden);
-    apply(await renderThemePreview(runtime, context, config.template, hidden));
+    apply(doc, await renderThemePreview(runtime, context, data.template, hidden), !painted);
+    painted = true;
   };
 
   // The parent reads this to decide whether it can re-render in place; without
-  // it, every change falls back to reloading the frame from the Worker.
+  // it, every change falls back to reloading the frame.
   (window as unknown as { themeEditorPreview?: unknown }).themeEditorPreview = { render };
-  window.parent.postMessage({ type: 'theme-editor-preview-ready' }, window.location.origin);
+
+  try {
+    await render();
+  } catch (error) {
+    fail(error instanceof Error ? error.message : 'The preview could not be rendered.');
+    return;
+  }
+  // Writing the document replaces what the editor page bound its click and
+  // selection handling to, so tell it there is new markup to bind.
+  window.postMessage({ type: 'theme-editor-preview-ready' }, window.location.origin);
 }
 
 void start();
