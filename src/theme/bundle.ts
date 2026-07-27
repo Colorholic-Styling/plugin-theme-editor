@@ -1,6 +1,6 @@
 import type { PluginEnv } from '../types';
 import type { ThemeDefinition } from '../themes';
-import { AssetThemeStore } from './store';
+import { themeStore } from '../themes';
 
 /**
  * The theme's Liquid sources keyed by the path the renderer resolves, so the
@@ -11,7 +11,7 @@ export async function themeBundle(
   env: PluginEnv,
   theme: ThemeDefinition,
 ): Promise<Record<string, string>> {
-  const store = new AssetThemeStore(env.VIEWS, theme.assetPrefix);
+  const store = themeStore(env, theme);
   const manifest = JSON.parse(await store.read('/theme-manifest.json')) as unknown;
   const files = isRecord(manifest) && Array.isArray(manifest.files)
     ? manifest.files.filter(isThemePath)

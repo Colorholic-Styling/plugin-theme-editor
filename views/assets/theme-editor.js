@@ -45,6 +45,8 @@
   var dirty = false;
   var saving = false;
   var previewTimer = 0;
+  var bindingTimer = 0;
+  var settingsMode = root.getAttribute('data-settings-mode') === 'schema' ? 'schema' : 'values';
   var inspectorView = blockFromValue(selectedBlockInput.value) === null ? 'list' : 'settings';
 
   setInspectorView(inspectorView, false, false);
@@ -52,10 +54,19 @@
 
   form.addEventListener('input', function (event) {
     var target = event.target;
-    if (target && typeof target.name === 'string' && target.name.indexOf('field:/') === 0) {
+    if (!target || typeof target.name !== 'string') return;
+    if (target.name.indexOf('field:/') === 0) {
       dirty = true;
       clearSaveStatus();
       schedulePreviewRender();
+      return;
+    }
+    if (target.name.indexOf('setting:') === 0) {
+      dirty = true;
+      clearSaveStatus();
+      // The hint under a binding is what that binding resolves to, so it has
+      // to follow the binding rather than the value it started out showing.
+      scheduleBindingResolve(target);
     }
   });
   form.addEventListener('submit', function (event) {
@@ -79,6 +90,15 @@
     toggleSectionVisibility(visibility);
   });
 
+  // The binding is there to be copied, so put the caret through the whole of
+  // it rather than making the reader drag-select Liquid braces.
+  root.addEventListener('focusin', function (event) {
+    var target = event.target;
+    if (target && target.hasAttribute && target.hasAttribute('data-theme-editor-binding')) {
+      target.select();
+    }
+  });
+
   root.addEventListener('click', function (event) {
     var target = event.target;
     if (!target || typeof target.closest !== 'function') return;
@@ -90,11 +110,49 @@
       return;
     }
 
+    var mode = target.closest('[data-theme-editor-mode]');
+    if (mode && root.contains(mode)) {
+      // Both panels are already on the page, so the switch is local — unless
+      // the schema panel describes a block other than the selected one, which
+      // only the server can re-render.
+      if (!schemaPanelMatchesSelection()) return;
+      event.preventDefault();
+      setSettingsMode(mode.getAttribute('data-theme-editor-mode'), mode.href);
+      return;
+    }
+
     var link = target.closest('[data-theme-editor-focus]');
     if (!link || !root.contains(link)) return;
+    // Schema mode is rendered from the section's own {% schema %}, which this
+    // page cannot compose locally, so let the link load it from the server.
+    if (settingsMode === 'schema') return;
     event.preventDefault();
     focusBlock(blockFromValue(link.getAttribute('data-block')), link.href, true, 'settings');
   });
+
+  // Choosing a page, template, or language loads it straight away. The submit
+  // button stays in the markup for the no-script path and is hidden only once
+  // this takes over, so the form is never left with no way to submit.
+  var loadForm = root.querySelector('[data-theme-editor-load]');
+  if (loadForm) {
+    loadForm.querySelectorAll('select').forEach(function (select) {
+      select.setAttribute('data-loaded-value', select.value);
+    });
+    loadForm.addEventListener('change', function (event) {
+      var select = event.target;
+      if (!select || select.tagName !== 'SELECT' || !loadForm.contains(select)) return;
+      if (dirty && !window.confirm('Discard unsaved changes in this selection?')) {
+        // Leaving the new choice showing would describe a page that was never
+        // loaded, so put the selector back to what is on screen.
+        select.value = select.getAttribute('data-loaded-value') || select.value;
+        return;
+      }
+      dirty = false;
+      loadForm.submit();
+    });
+    var loadButton = loadForm.querySelector('[data-theme-editor-load-button]');
+    if (loadButton) loadButton.hidden = true;
+  }
 
   if (preview) {
     preview.addEventListener('load', bindPreview);
@@ -108,6 +166,9 @@
     if (!isRecord(event.data) || event.data.type !== 'theme-editor-preview-ready') return;
     bindPreview();
     selectBlockInPreview(blockFromValue(selectedBlockInput.value));
+    // The server's first paint of the hints reads stored values; now that the
+    // renderer is up, replace them with what the bindings actually resolve to.
+    resolveAllBindings();
   });
 
   window.addEventListener('popstate', function () {
@@ -137,6 +198,8 @@
         if (link) {
           var wrapper = link.closest('[data-theme-editor-block]');
           if (!wrapper) return;
+          // As in the list, schema mode needs the server to compose the panel.
+          if (settingsMode === 'schema') return;
           event.preventDefault();
           focusBlock(
             blockFromValue(wrapper.getAttribute('data-theme-editor-block')),
@@ -197,6 +260,9 @@
         state.lect = payload.lect;
         stateSource.value = JSON.stringify(state);
       }
+      if (isRecord(payload.settingOverrides)) {
+        renderPreview({ settingOverrides: payload.settingOverrides });
+      }
       dirty = false;
       showSaveStatus(
         typeof payload.message === 'string' ? payload.message : 'Changes saved',
@@ -251,6 +317,53 @@
    * redraw needs no request. Reloading stays the fallback for as long as that
    * asset is unapproved or still starting up.
    */
+  /**
+   * The schema panel is rendered by the server for one block. Composing a
+   * different block here cannot rebuild it, so the mode links fall back to
+   * loading that block when the two no longer agree.
+   */
+  function schemaPanelMatchesSelection() {
+    var modes = root.querySelector('[data-theme-editor-modes]');
+    if (!modes) return false;
+    return modes.getAttribute('data-schema-block') === (selectedBlockInput.value || '');
+  }
+
+  function setSettingsMode(mode, href) {
+    settingsMode = mode === 'schema' ? 'schema' : 'values';
+    root.setAttribute('data-settings-mode', settingsMode);
+
+    root.querySelectorAll('[data-theme-editor-panel]').forEach(function (panel) {
+      var active = panel.getAttribute('data-theme-editor-panel') === settingsMode;
+      panel.hidden = !active;
+      // A hidden panel stays disabled so its inputs never reach the save
+      // payload, where they would compete with the visible panel's.
+      panel.disabled = !active;
+    });
+
+    root.querySelectorAll('[data-theme-editor-mode]').forEach(function (link) {
+      var active = link.getAttribute('data-theme-editor-mode') === settingsMode;
+      link.classList.toggle('bg-indigo-50', active);
+      link.classList.toggle('text-indigo-700', active);
+      link.classList.toggle('text-gray-700', !active);
+      link.classList.toggle('hover:bg-gray-50', !active);
+      if (active) link.setAttribute('aria-current', 'true');
+      else link.removeAttribute('aria-current');
+    });
+
+    var schemaName = root.querySelector('[data-theme-editor-schema-name]');
+    if (schemaName) schemaName.hidden = settingsMode !== 'schema';
+
+    // The two panels save different things — one the page's values, the other
+    // the template's bindings — so the form has to follow the mode.
+    var action = form.getAttribute(
+      settingsMode === 'schema' ? 'data-schema-action' : 'data-values-action'
+    );
+    if (action) form.action = action;
+
+    if (href) window.history.replaceState(window.history.state, '', href);
+    syncPanelHeight();
+  }
+
   async function toggleSectionVisibility(form) {
     var button = form.querySelector('[data-theme-editor-visibility-button]');
     if (button) button.disabled = true;
@@ -294,6 +407,38 @@
         + ' section in every page using this template';
     }
     if (flag) flag.hidden = !hidden;
+  }
+
+  /**
+   * Asks the preview for what a binding resolves to on the page being shown.
+   * The preview owns the render context, so this is the value the section
+   * would receive rather than a second reading of the stored data.
+   */
+  function resolveBinding(input) {
+    var api = frameRenderer();
+    if (!api || typeof api.resolve !== 'function') return;
+    var hint = input.parentElement
+      && input.parentElement.querySelector('[data-theme-editor-setting-value]');
+    if (!hint) return;
+    var binding = input.value;
+    api.resolve(binding).then(function (value) {
+      // A slower answer for a binding that has since been edited must not
+      // overwrite the newer one.
+      if (input.value !== binding) return;
+      var text = typeof value === 'string' ? value.trim() : '';
+      hint.textContent = text || 'Empty';
+    }).catch(function () {
+      hint.textContent = 'Could not resolve this binding.';
+    });
+  }
+
+  function scheduleBindingResolve(input) {
+    window.clearTimeout(bindingTimer);
+    bindingTimer = window.setTimeout(function () { resolveBinding(input); }, 250);
+  }
+
+  function resolveAllBindings() {
+    root.querySelectorAll('[data-theme-editor-setting]').forEach(resolveBinding);
   }
 
   function frameRenderer() {
@@ -400,6 +545,7 @@
       var panel = composePanel(block);
       renderPanel(panel);
       updateNavigation(panel.selectedBlock);
+      syncSettingsModes(panel.selectedBlock);
       selectBlockInPreview(panel.selectedBlock, true);
       if (fieldsScroll) fieldsScroll.scrollTop = 0;
       setInspectorView(nextView, true, true);
@@ -612,6 +758,24 @@
       stringValue(field.path)
     ));
     return label;
+  }
+
+  /**
+   * The mode bar belongs to a block, and focusing one here never reloads the
+   * page, so it has to be revealed and re-pointed at the block now selected.
+   */
+  function syncSettingsModes(block) {
+    var modes = root.querySelector('[data-theme-editor-modes]');
+    if (!modes) return;
+    modes.hidden = block === null;
+    if (block === null) return;
+
+    var href = editorHref(block);
+    modes.querySelectorAll('[data-theme-editor-mode]').forEach(function (link) {
+      link.href = link.getAttribute('data-theme-editor-mode') === 'schema'
+        ? href + (href.indexOf('?') === -1 ? '?' : '&') + 'settings=schema'
+        : href;
+    });
   }
 
   function updateNavigation(block) {

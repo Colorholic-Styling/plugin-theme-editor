@@ -6,6 +6,8 @@
   "scripts": {
     "theme:sync": "node scripts/sync-theme.mjs",
     "theme:watch": "node scripts/sync-theme.mjs --watch",
+    "theme:apply": "node scripts/apply-theme.mjs",
+    "theme:push": "node scripts/sync-theme.mjs --push",
     "build:preview": "esbuild src/browser/preview.ts --bundle --format=iife --minify --platform=browser --target=es2020 --outfile=views/assets/theme-preview.js",
     "predev": "npm run theme:sync && npm run build:preview",
     "dev": "trap 'kill 0' EXIT INT TERM; npm run theme:watch & wrangler dev --port 8798",

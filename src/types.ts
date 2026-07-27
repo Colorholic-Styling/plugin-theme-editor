@@ -4,6 +4,10 @@ export interface PluginEnv extends CmsClientEnv {
   TENANTS?: KVNamespace;
   /** Per-template editor overrides; reads degrade to defaults when unbound. */
   THEME_OVERRIDES?: KVNamespace;
+  /** Theme library root: one folder per theme, writable by this Worker. */
+  THEMES?: R2Bucket;
+  /** Fine-grained GitHub token (Contents: read and write) for theme sync. */
+  GITHUB_TOKEN?: string;
   VIEWS: Fetcher;
   CF_VERSION_METADATA?: WorkerVersionMetadata;
   THEME_NAME?: string;

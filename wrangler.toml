@@ -31,6 +31,15 @@ THEME_BOOKING_URL = "https://www.fresha.com/zh-HK/a/colorholic-stylingxi-se-shen
 binding = "THEME_OVERRIDES"
 id = "REPLACE_WITH_THEME_EDITOR_OVERRIDES_KV_ID"
 
+# The theme library. The bucket is the root: every top-level folder is a theme,
+# so `colorholic-styling/templates/page.json` is that theme's page template.
+# Unlike the asset bundle this Worker can write it, which is what lets a
+# deployed editor publish. `wrangler dev` simulates it locally, so
+# `npm run theme:sync -- --push` fills it in development too.
+[[r2_buckets]]
+binding = "THEMES"
+bucket_name = "cms-themes"
+
 # Set this plugin's dedicated CMS registration secret with:
 #   wrangler secret put PLUGIN_SECRET
 #

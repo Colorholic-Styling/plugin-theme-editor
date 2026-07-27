@@ -13,9 +13,15 @@ Visual theme editing for 0xCMS. The first development slice can:
   the initial page `lect`, with normal links as fallback);
 - edit scalar attributes, localized values, pointers, nested items, and block
   values from `lect`, with the preview redrawing in the browser as you type;
+- drive the block settings panel from the section's own `{% schema %}`, showing
+  each setting's declared control and the Liquid a JSON template binds it with;
 - show or hide a theme template's sections without reloading the page or the
   preview, stored per template so the change applies to every page that
   template renders;
+- write those template edits back into the theme's own files with
+  `npm run theme:apply`, or publish them into the theme bucket;
+- clone a theme from GitHub and commit the templates back to it, without a
+  `git` binary anywhere;
 - save through the host `/__cms/pages/:id` API, preserving normal CMS
   versions, lifecycle hooks, and acting-user attribution.
 
@@ -133,6 +139,14 @@ The first render writes the whole document, so the theme's own `<head>` is
 installed; later renders replace the body alone, keeping the stylesheet from
 being refetched and the scroll position from jumping.
 
+The frame is recognised by the placeholder its shell carries, never by
+`readyState`. Every iframe holds a blank document until its navigation commits,
+and that document already reports `complete` — so a warm cache, where this
+script runs before the frame has committed, would otherwise draw the theme into
+a document the real one is about to replace, leaving the placeholder showing.
+Each render re-reads `contentDocument` for the same reason, and a frame that
+reloads back to its placeholder is drawn again.
+
 Both loads happen once, at start-up. Every render after that — typing in a
 block, moving the selection, toggling a section — is local and reaches no
 network at all.
@@ -162,6 +176,191 @@ Both `/assets/theme-editor.js` and `/assets/theme-preview.js` are approval-gated
 the host pins each file's SHA-384 when an admin approves it and recomputes it on
 every serve, so **changing either one requires re-approving it** in the CMS
 plugin settings before it will load again.
+
+### Section schemas
+
+The block settings panel has two modes. **Values** lists what `lect` actually
+stores, inferred from each value's shape. **Schema** reads the section's own
+`{% schema %}` tag out of `sections/<type>.liquid`, the way Shopify does, so
+labels, control types, option lists, and ordering come from the theme author —
+a `select` renders as a dropdown of its declared options rather than a text box.
+
+**Schema mode edits the template, not the page.** Each control holds the Liquid
+the template binds that setting to, and underneath sits what that Liquid
+*resolves to* — not the stored value it happens to read, so editing a binding
+to `hello` shows `hello`, and pointing it at another block value shows that
+value. Resolution runs through `resolveThemeBinding`, which shares the preview's
+render data, so what the hint reports is what the section would receive:
+
+```text
+Eyebrow      text       [ {{ page.blocks[0].eyebrow }} ]
+                          16-Colour analysis          ← the binding, resolved
+```
+
+The editor page asks the preview for that answer as the binding is typed, so no
+request is made. The Worker's first paint of a hint is the stored value it
+matched, which agrees whenever the binding is still the theme's own; the editor
+replaces every hint once the renderer is up.
+
+Saving posts to `/template-settings`, which writes those bindings into the
+`THEME_OVERRIDES` KV alongside the hidden set — the theme's own template file is
+a read-only asset that `theme:sync` regenerates, so the edit is layered over it.
+The compiler merges the override into the section's declared settings before
+resolving them, and the same set is handed to the browser renderer, so the frame
+redraws through the new binding.
+
+Only bindings that *differ* from the theme's own template are stored. Recording
+one the theme already declares would freeze it, so a later edit to the theme
+file would be masked by an override repeating what it used to say — the same
+reason the hidden set stores keys rather than a copy of `order`. Settings a
+section's schema does not declare are refused, and a binding cleared to nothing
+means the template no longer sets it.
+
+Page *values* are still edited in the Values panel; the two panels save to
+different routes and the form's action follows the mode.
+
+The resolved value shown under each binding comes from matching schema ids to
+`lect`: ids name the *view model* a section renders, so candidate paths are
+matched against the fields the editor derived — `bodyHtml` reads `body`,
+`pictureAlt` reads `picture_alt`, `primary_label` reads `primary.label`. Some
+settings are computed by the projection rather than stored (`hasNews`,
+`indexLabel`, `whatsappHref`) and say so instead of showing a value. Against the
+development theme 72 of 75 declared settings resolve.
+
+Both panels are built whichever mode the URL asks for, so switching between
+them is a client-side toggle with no page load; the inactive one is a disabled
+`<fieldset>`, which keeps its inputs out of the save payload where they would
+otherwise compete with the visible panel's for the same `lect` paths. Mode stays
+a URL parameter (`&settings=schema`) — kept in step with `replaceState` — so it
+survives reloads, rides along when the page/template/language selectors reload
+the editor, and is shareable.
+
+Selecting a *different* block in schema mode still loads from the server, since
+only the Worker reads the theme's schema. The mode links carry the block their
+panel was built for and fall back to normal navigation when it no longer matches
+the selection, rather than showing a panel that describes another block.
+
+### The theme bucket
+
+`THEMES` is the theme library, and the bucket is its root: every top-level
+folder is a theme, so `colorholic-styling/templates/page.json` is that theme's
+page template. The registry is the bucket listing rather than anything compiled
+into this Worker, so adding a theme is uploading a folder. Each theme names
+itself in its own `theme-manifest.json`.
+
+```text
+cms-themes/
+  colorholic-styling/      ← one theme
+    layout/ sections/ snippets/ templates/ assets/
+    theme-manifest.json
+  studio-minimal/          ← another
+```
+
+A bucket is what makes the theme *writable*. An asset binding is immutable at
+runtime, which is why the editor keeps overrides at all; `themeStore()` hands
+back an `R2ThemeStore` for a bucket theme and `isWritable()` is what the
+publish route checks. Everything else — the renderer, the schema reader, the
+bundle endpoint, the browser bundle — is unchanged, because they only ever knew
+`ThemeStore`.
+
+Fill the bucket from a checked-out theme:
+
+```bash
+npm run theme:push              # sync, then upload into the bucket
+THEME_ID=studio-minimal npm run theme:push
+```
+
+The upload goes through the plugin rather than the R2 API, so the same command
+fills Miniflare's local R2 under `wrangler dev` and a real bucket in
+production. With no bucket bound, the development theme staged under
+`views/theme/` stands in and everything behaves as before.
+
+Publishing folds the override layer into the theme's own files:
+
+```text
+POST /admin/plugins/theme-editor/publish   → writes each template, clears what applied
+```
+
+It is the deployed twin of `theme:apply` and shares its merge, so both produce
+the same file. A theme served from the asset bundle refuses with a 409 pointing
+at `theme:apply`, since only the machine holding the theme can write it there.
+
+### GitHub
+
+A theme can be cloned from a repository and committed back to it, from the
+dashboard. There is no `git` here — a Worker has no filesystem and no
+subprocesses — so both directions use GitHub's Git Data API over `fetch`:
+
+```text
+clone   read ref → commit → tree (recursive) → blobs   → write into the bucket
+push    blobs → tree (on the branch's current one) → commit → move the ref
+```
+
+Building the push tree on `base_tree` is what keeps it safe: files this editor
+never touched are carried over rather than dropped by omission, and the whole
+push lands as one commit rather than a file at a time.
+
+Cloning writes the repo into the bucket as a theme folder and records the repo
+in that theme's `theme-manifest.json`, so pushing later needs no second setup —
+the dashboard shows those themes as `owner/repo@branch` and gives them a
+**Push to GitHub** button. Only files the renderer reads are cloned
+(`.liquid`, `.json`, `.css`, images, fonts), and only from the directory you
+name, so a repository holding a site alongside its theme brings across just the
+theme.
+
+It needs a fine-grained token with **Contents: read and write**. For a single
+deployment that is a Worker secret:
+
+```bash
+wrangler secret put GITHUB_TOKEN
+```
+
+For a Worker serving several CMS hosts the token belongs to the *tenant*, not
+the Worker, since each pushes to its own repository. Put it in the tenant's
+`vars` in the `TENANTS` registry and nothing here changes — `tenantClientEnv`
+spreads `tenant.vars` last, so `env.GITHUB_TOKEN` is that tenant's token:
+
+```json
+{
+  "cmsUrl": "https://cms1.example.com",
+  "secret": "…",
+  "vars": { "GITHUB_TOKEN": "github_pat_…" }
+}
+```
+
+Spread last also means a tenant's token overrides the Worker secret, so one
+host can be pointed at its own repository while the rest share a default. The
+trade-off is that KV values can be read back through the API while a Worker
+secret cannot, so prefer the secret when a single token serves everything.
+
+Without a token the dashboard says so and refuses before making any request;
+the same is true with no bucket to clone into. Push is gated on
+`theme-editor:write` and confirms before it commits.
+
+### Writing edits back into the theme
+
+A Worker has no filesystem, so the plugin can never edit the theme it renders —
+the overrides above are a layer over files it can only read. `theme:apply` runs
+on the machine that *does* have the theme checked out, and is what makes them
+permanent:
+
+```bash
+npm run theme:apply -- --dry-run   # show what would change
+npm run theme:apply                # write the theme, then clear what applied
+```
+
+It reads `/overrides` from the running plugin, merges each template's overrides
+into the theme's own JSON — hidden keys leave `order`, changed bindings replace
+what the section declares — writes the file, and only then clears what it
+applied, so a failed write leaves the edit in the editor rather than losing it
+between the two. A hidden section keeps its definition and loses only its place
+in `order`, so showing it again is putting the key back rather than rebuilding
+it. `theme:watch` then picks the file up and the preview re-renders from the
+theme itself.
+
+It needs `npm run dev` running (it reads `PLUGIN_SECRET` from `.dev.vars`);
+`THEME_SOURCE_DIR`, `PLUGIN_URL`, and `THEME_ID` override where it reads and
+writes.
 
 ### Section visibility
 
@@ -202,14 +401,16 @@ every declared section stays reachable.
 
 ## Next phases
 
-1. Load theme metadata/schema alongside templates so field labels and controls
-   come from blueprints instead of value-shape inference.
+1. Extend schema reading to a section's `blocks[]` entries, so repeated items
+   (features, services, steps) get declared labels and controls too; the
+   section-level `settings[]` already come from the theme.
 2. Add block and item add/delete/reorder operations with the CMS structured
    editing contract, and extend `THEME_OVERRIDES` from section visibility to
    section reordering.
 3. Add draft preview support for related pages, media proxy behavior, template
    diagnostics, and responsive viewport controls.
-4. Store versioned theme bundles in R2, populate the theme registry from the
-   bucket, and invalidate parsed Liquid caches by theme version.
+4. Version the bucket's theme folders (`colorholic-styling/v3/…`) for rollback,
+   and cache the bundle per theme version so a render is not one R2 read per
+   partial. The registry and the writable store are in place.
 5. Add drag selection and richer unsaved-change state while preserving the
    current server-rendered fallbacks.

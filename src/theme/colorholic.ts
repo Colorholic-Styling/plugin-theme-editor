@@ -94,12 +94,44 @@ export function previewThemeStore(base: ThemeStore): ThemeStore {
   });
 }
 
+/**
+ * Renders one Liquid expression against the page the preview is showing, which
+ * is how the editor tells you what a template binding actually resolves to.
+ * It shares the render data with the preview, so the answer is what the section
+ * would receive rather than a separate guess at it.
+ */
+export async function resolveThemeBinding(
+  runtime: ThemeRuntime,
+  context: ThemeRenderContext,
+  binding: string,
+): Promise<string> {
+  return renderThemeSource(runtime.store, binding, previewRenderData(runtime, context));
+}
+
 export async function renderThemePreview(
   runtime: ThemeRuntime,
   context: ThemeRenderContext,
   template: ThemeTemplate,
   hidden: ReadonlySet<string> = new Set(),
+  settingOverrides: Readonly<Record<string, Record<string, string>>> = {},
 ): Promise<string> {
+  const store = runtime.store;
+  const renderData = previewRenderData(runtime, context);
+  const compiledTemplate = await previewTemplateSource(
+    store, template, renderData, hidden, settingOverrides,
+  );
+  renderData.templateSections = compiledTemplate.sections;
+  const html = await renderThemeSource(store, compiledTemplate.source, renderData);
+
+  return html
+    .replace('</head>', `${PREVIEW_STYLE}</head>`)
+    .replaceAll('href="/assets/site.css', `href="${ADMIN_BASE}/theme/assets/site.css`);
+}
+
+function previewRenderData(
+  runtime: ThemeRuntime,
+  context: ThemeRenderContext,
+): Record<string, unknown> {
   const chain = languageChain(context.language, context.defaultLanguage, context.languages);
   const labels = strings(context.language);
   const sections = blockViewModels(context.page, chain, context).map((section) => ({
@@ -115,8 +147,7 @@ export async function renderThemePreview(
   const pageSubtitle = localized(context.page.lect, 'subtitle', chain);
   const articles = context.news.map((articlePage) => newsArticleModel(articlePage, chain));
   const article = newsArticleModel(context.page, chain);
-  const store = runtime.store;
-  const renderData: Record<string, unknown> = {
+  return {
     lang: context.language === 'mis' ? context.defaultLanguage : context.language,
     language: context.language,
     prefix: '',
@@ -153,13 +184,6 @@ export async function renderThemePreview(
     blocks: sections,
     sections,
   };
-  const compiledTemplate = await previewTemplateSource(store, template, renderData, hidden);
-  renderData.templateSections = compiledTemplate.sections;
-  const html = await renderThemeSource(store, compiledTemplate.source, renderData);
-
-  return html
-    .replace('</head>', `${PREVIEW_STYLE}</head>`)
-    .replaceAll('href="/assets/site.css', `href="${ADMIN_BASE}/theme/assets/site.css`);
 }
 
 async function previewTemplateSource(
@@ -167,6 +191,7 @@ async function previewTemplateSource(
   template: ThemeTemplate,
   data: Record<string, unknown>,
   hidden: ReadonlySet<string>,
+  settingOverrides: Readonly<Record<string, Record<string, string>>>,
 ): Promise<{ source: string; sections: Record<string, unknown> }> {
   const source = await store.read(template.path);
   if (template.format === 'liquid') return { source, sections: {} };
@@ -199,10 +224,14 @@ async function previewTemplateSource(
       continue;
     }
     const variable = `s${index}`;
+    // A settings override replaces what the theme's own template binds, which
+    // is how the editor edits a template it cannot write to.
+    const declared = isRecord(section.settings) ? section.settings : {};
+    const settings = { ...declared, ...(settingOverrides[key] ?? {}) };
     templateSections[variable] = {
       id: key,
       type,
-      settings: await resolveTemplateValue(store, section.settings ?? {}, data),
+      settings: await resolveTemplateValue(store, settings, data),
       blocks: await resolveTemplateBlocks(store, section, data),
     };
     const renderCall = `{% render '/sections/${type}', section: templateSections.${variable} %}`;

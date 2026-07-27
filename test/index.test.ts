@@ -59,17 +59,16 @@ async function renderPreview(
     selectedBlock?: number | null;
     hidden?: string[];
     news?: CmsPage[];
+    settingOverrides?: Record<string, Record<string, string>>;
   } = {},
 ): Promise<string> {
   const pluginEnv = env();
-  const theme = availableThemes(pluginEnv)[0];
-  const templates = await themeTemplates(pluginEnv, theme);
+  const theme = (await availableThemes(pluginEnv))[0];
+  const store = previewThemeStore(new AssetThemeStore(pluginEnv.VIEWS, theme.assetPrefix));
+  const templates = await themeTemplates(pluginEnv, theme, store);
   const template = selectThemeTemplate(templates, options.templateId ?? 'page');
   if (!template) throw new Error('Theme template not found');
-  const runtime = themeRuntime(
-    pluginEnv,
-    previewThemeStore(new AssetThemeStore(pluginEnv.VIEWS, theme.assetPrefix)),
-  );
+  const runtime = themeRuntime(pluginEnv, store);
   return renderThemePreview(runtime, {
     page: fixture,
     settings: null,
@@ -80,7 +79,7 @@ async function renderPreview(
     defaultLanguage: 'en',
     editorHref: `/admin/plugins/theme-editor/editor?theme=colorholic-styling&template=${template.id}&page_id=${fixture.id}&language=en`,
     selectedBlock: options.selectedBlock === undefined ? 0 : options.selectedBlock,
-  }, template, new Set(options.hidden ?? []));
+  }, template, new Set(options.hidden ?? []), options.settingOverrides ?? {});
 }
 
 /** In-memory stand-in for the THEME_OVERRIDES namespace. */
@@ -472,6 +471,282 @@ describe('theme editor routes', () => {
     expect(html).toContain('data-theme-preview-status');
   });
 
+  it('drives block settings from the section schema and shows their bindings', async () => {
+    const fixture = page({
+      lect: {
+        _type: 'home',
+        _blocks: [
+          {
+            _id: 'hero-1',
+            _type: 'hero',
+            _weight: 10,
+            theme: 'cream',
+            anchor: 'top',
+            align: 'left',
+            eyebrow: { en: 'Studio' },
+            title: { en: 'Hello from the theme' },
+            body: { en: '<p>Editable copy.</p>' },
+            picture: 'hero.jpg',
+            picture_alt: { en: 'Alt' },
+            primary: { label: { en: 'Book' }, url: { en: '/book' } },
+            secondary: { label: { en: 'More' }, url: { en: '/more' } },
+          },
+        ],
+      },
+    });
+    mockCms(({ url }) => {
+      if (url.pathname === '/__cms/content-meta') return contentMeta();
+      if (url.pathname === '/__cms/pages') {
+        return { pages: url.searchParams.get('page_type') === 'home' ? [fixture] : [], total: 1 };
+      }
+      throw new Error(`Unexpected call ${url}`);
+    });
+
+    const response = await plugin.fetch(
+      adminRequest('/__plugin/admin/editor?theme=colorholic-styling&template=page&page_id=12&language=en&block=0&settings=schema'),
+      env(),
+    );
+    const data = await response.json() as Record<string, unknown>;
+    const settings = data.schemaSettings as Array<{
+      id: string; label: string; type: string; binding: string; value: string;
+      editable: boolean; hasOptions: boolean; inputName: string;
+    }>;
+
+    expect(data.schemaMode).toBe(true);
+    expect(data.schemaName).toBe('Hero');
+    // Order, labels, and control types come from the section's own schema.
+    expect(settings.map((setting) => setting.id)).toEqual([
+      'theme', 'anchor', 'align', 'eyebrow', 'title', 'bodyHtml',
+      'primary_label', 'primary_url', 'secondary_label', 'secondary_url',
+      'picture', 'pictureAlt',
+    ]);
+    expect(settings[0]).toMatchObject({ label: 'Theme', type: 'select', hasOptions: true });
+
+    // The binding is the Liquid a JSON template writes to read this setting.
+    expect(settings[0].binding).toBe('{{ page.blocks[0].theme }}');
+    expect(settings.find((setting) => setting.id === 'bodyHtml')?.binding)
+      .toBe('{{ page.blocks[0].bodyHtml }}');
+
+    // Saving writes the binding into the template, so the inputs are named for
+    // the setting, not for the lect path the value happens to live at.
+    expect(settings.find((setting) => setting.id === 'bodyHtml')?.inputName).toBe('setting:bodyHtml');
+    expect(data.schemaSection).toBe('hero');
+    expect(data.schemaAction).toBe('/admin/plugins/theme-editor/template-settings');
+
+    // Every declared setting still resolves to a real lect field, which is what
+    // gives the binding a resolved value to show underneath it.
+    expect(settings.every((setting) => setting.editable)).toBe(true);
+    expect(settings.find((setting) => setting.id === 'theme')?.value).toBe('cream');
+    expect(settings.find((setting) => setting.id === 'eyebrow')?.value).toBe('Studio');
+
+    const html = await renderEditorSection(data);
+    expect(html).toContain('>Schema<');
+    expect(html).toContain('data-settings-mode="schema"');
+
+    // The control holds the binding — what a save writes into the template —
+    // and the value it resolves to is the hint beneath it.
+    expect(html).toContain('name="setting:eyebrow" value="{{ page.blocks[0].eyebrow }}"');
+    expect(html).toContain('name="setting:bodyHtml" value="{{ page.blocks[0].bodyHtml }}"');
+    // First paint of the hint is the stored value; the editor page replaces it
+    // with what the binding resolves to once the renderer is up.
+    const eyebrow = html.slice(html.indexOf('name="setting:eyebrow"'));
+    expect(eyebrow.slice(0, 900)).toContain('data-theme-editor-setting-value');
+    expect(eyebrow.slice(0, 900)).toContain('Studio');
+
+    // The schema panel writes template bindings, never lect paths.
+    const schemaPanel = html.slice(
+      html.indexOf('data-theme-editor-panel="schema"'),
+      html.indexOf('data-theme-editor-panel="values"'),
+    );
+    expect(schemaPanel).not.toContain('name="field:/');
+    expect(html).toContain('action="/admin/plugins/theme-editor/template-settings"');
+    // Page values are still edited in the values panel.
+    expect(html).toContain('name="field:/_blocks/0/body/en"');
+  });
+
+  it('leaves the values mode untouched when no schema is asked for', async () => {
+    const fixture = page();
+    mockCms(({ url }) => {
+      if (url.pathname === '/__cms/content-meta') return contentMeta();
+      if (url.pathname === '/__cms/pages') {
+        return { pages: url.searchParams.get('page_type') === 'home' ? [fixture] : [], total: 1 };
+      }
+      throw new Error(`Unexpected call ${url}`);
+    });
+
+    const response = await plugin.fetch(
+      adminRequest('/__plugin/admin/editor?theme=colorholic-styling&template=page&page_id=12&language=en&block=0'),
+      env(),
+    );
+    const data = await response.json() as Record<string, unknown>;
+    expect(data.schemaMode).toBe(false);
+    expect(data.schemaModeHref).toContain('settings=schema');
+    expect(data.valuesModeHref).not.toContain('settings=schema');
+    // Both panels are built whichever mode is asked for, so switching between
+    // them needs no page load.
+    expect((data.schemaSettings as unknown[]).length).toBeGreaterThan(0);
+    expect(data.schemaBlock).toBe('0');
+
+    const html = await renderEditorSection(data);
+    expect(html).toContain('data-settings-mode="values"');
+    expect(html).toContain('name="field:/_blocks/0/title/en"');
+
+    // The inactive panel is disabled, so its inputs cannot compete with the
+    // visible panel's for the same lect paths on save.
+    const schemaPanel = html.slice(html.indexOf('data-theme-editor-panel="schema"'));
+    expect(schemaPanel.slice(0, 120)).toContain('disabled');
+    expect(schemaPanel.slice(0, 120)).toContain('hidden');
+    const valuesPanel = html.slice(html.indexOf('data-theme-editor-panel="values"'));
+    expect(valuesPanel.slice(0, 120)).not.toContain('disabled');
+  });
+
+  it('saves a schema setting as the template binding and renders through it', async () => {
+    const overrides = kv();
+    mockCms(({ url }) => {
+      if (url.pathname === '/__cms/content-meta') return contentMeta();
+      throw new Error(`Unexpected call ${url}`);
+    });
+
+    const response = await plugin.fetch(
+      adminRequest('/__plugin/admin/template-settings', {
+        method: 'POST',
+        headers: {
+          'content-type': 'application/x-www-form-urlencoded',
+          accept: 'application/json',
+        },
+        body: new URLSearchParams({
+          theme: 'colorholic-styling',
+          template: 'page',
+          section: 'hero',
+          'setting:title': '{{ page.blocks[0].eyebrow }}',
+          'setting:eyebrow': '',
+          'setting:nonsense': 'ignored',
+        }),
+      }),
+      env({ THEME_OVERRIDES: overrides }),
+    );
+    expect(response.status).toBe(200);
+    const payload = await response.json() as {
+      settings: Record<string, string>;
+      settingOverrides: Record<string, Record<string, string>>;
+    };
+
+    // A binding cleared to nothing is the template no longer setting it, and a
+    // setting the section's schema does not declare is refused outright.
+    expect(payload.settings).toEqual({ title: '{{ page.blocks[0].eyebrow }}' });
+    expect(payload.settings.nonsense).toBeUndefined();
+    expect(payload.settingOverrides.hero).toEqual({ title: '{{ page.blocks[0].eyebrow }}' });
+
+    // Submitting a binding the theme already declares stores nothing, so a
+    // later edit to the theme's own template is not masked by an override
+    // repeating what it used to say.
+    const unchanged = await plugin.fetch(
+      adminRequest('/__plugin/admin/template-settings', {
+        method: 'POST',
+        headers: {
+          'content-type': 'application/x-www-form-urlencoded',
+          accept: 'application/json',
+        },
+        body: new URLSearchParams({
+          theme: 'colorholic-styling',
+          template: 'page',
+          section: 'hero',
+          'setting:title': '{{ page.blocks[0].title }}',
+          'setting:theme': '{{ page.blocks[0].theme }}',
+        }),
+      }),
+      env({ THEME_OVERRIDES: overrides }),
+    );
+    expect((await unchanged.json() as { settings: unknown }).settings).toEqual({});
+
+    // The override is what the preview compiles: the hero title now renders the
+    // block's eyebrow, because that is what the template binds.
+    const fixture = page({
+      lect: {
+        _type: 'home',
+        _blocks: [{
+          _id: 'hero-1',
+          _type: 'hero',
+          _weight: 10,
+          theme: 'cream',
+          eyebrow: { en: 'Bound through the template' },
+          title: { en: 'Original title' },
+        }],
+      },
+    });
+    const html = await renderPreview(fixture, { settingOverrides: payload.settingOverrides });
+    expect(html).toContain('Bound through the template');
+    expect(html).not.toContain('Original title');
+  });
+
+  it('exposes the override layer for the tooling that writes the theme', async () => {
+    const overrides = kv({
+      'sections:https://cms.example.com:colorholic-styling:page': JSON.stringify({
+        hidden: ['cta'],
+        settings: { hero: { title: '{{ page.blocks[0].eyebrow }}' } },
+      }),
+      // A template with nothing overridden is left out entirely, so the writer
+      // has no reason to touch its file.
+      'sections:https://cms.example.com:colorholic-styling:message': JSON.stringify({
+        hidden: [],
+        settings: {},
+      }),
+    });
+
+    const response = await plugin.fetch(
+      adminRequest('/__plugin/admin/overrides?theme=colorholic-styling'),
+      env({ THEME_OVERRIDES: overrides }),
+    );
+    expect(response.status).toBe(200);
+    expect(await response.json()).toEqual({
+      theme: 'colorholic-styling',
+      templates: {
+        page: { hidden: ['cta'], settings: { hero: { title: '{{ page.blocks[0].eyebrow }}' } } },
+      },
+    });
+
+    // Cleared once written into the theme, so the file is the only thing left
+    // saying what it says.
+    const cleared = await plugin.fetch(
+      adminRequest('/__plugin/admin/overrides/clear?theme=colorholic-styling', {
+        method: 'POST',
+        headers: { 'content-type': 'application/x-www-form-urlencoded' },
+        body: new URLSearchParams({ template: 'page' }),
+      }),
+      env({ THEME_OVERRIDES: overrides }),
+    );
+    expect(await cleared.json()).toMatchObject({ ok: true, template: 'page' });
+    expect(overrides.store.has('sections:https://cms.example.com:colorholic-styling:page')).toBe(false);
+  });
+
+  it('refuses to clear a template the theme does not have', async () => {
+    const response = await plugin.fetch(
+      adminRequest('/__plugin/admin/overrides/clear?theme=colorholic-styling', {
+        method: 'POST',
+        headers: { 'content-type': 'application/x-www-form-urlencoded' },
+        body: new URLSearchParams({ template: 'not-a-template' }),
+      }),
+      env({ THEME_OVERRIDES: kv() }),
+    );
+    expect(response.status).toBe(404);
+  });
+
+  it('denies clearing overrides without write access', async () => {
+    const response = await plugin.fetch(
+      adminRequest(
+        '/__plugin/admin/overrides/clear?theme=colorholic-styling',
+        {
+          method: 'POST',
+          headers: { 'content-type': 'application/x-www-form-urlencoded' },
+          body: new URLSearchParams({ template: 'page' }),
+        },
+        { id: '42', role: 'viewer', permissions: ['theme-editor:view'] },
+      ),
+      env({ THEME_OVERRIDES: kv() }),
+    );
+    expect(response.status).toBe(403);
+  });
+
   it('offers a show/hide control per template section in the list', async () => {
     const fixture = page();
     mockCms(({ url }) => {
@@ -614,7 +889,7 @@ describe('theme editor routes', () => {
     // A block in the URL makes the client open the settings panel over the
     // list the toggle was used from, so visibility changes must not carry one.
     expect(toggle.headers.get('location')).not.toContain('block=');
-    expect([...overrides.store.values()]).toEqual([JSON.stringify({ hidden: ['hero'] })]);
+    expect([...overrides.store.values()]).toEqual([JSON.stringify({ hidden: ['hero'], settings: {} })]);
 
     // Stored per template, so the section is gone from the compiled order for
     // any page rendered through it — not just the page that was open. The

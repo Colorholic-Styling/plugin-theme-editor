@@ -6,6 +6,51 @@
     </div>
   </div>
 
+  {% if flash != blank %}
+    <p class="mb-4 rounded-lg border border-emerald-200 bg-emerald-50 px-4 py-3 text-sm text-emerald-700">{{ flash }}</p>
+  {% endif %}
+
+  {% if canEdit %}
+    <form method="post" action="{{ cloneAction }}"
+          class="mb-4 flex flex-wrap items-end gap-3 rounded-xl border border-gray-200 bg-white p-4 shadow-sm">
+      <div class="w-full">
+        <h2 class="text-sm font-semibold text-gray-900">Clone a theme from GitHub</h2>
+        <p class="mt-1 text-sm text-gray-500">
+          Reads the theme directory at the branch head into the theme bucket. Pushing later needs no second setup.
+        </p>
+      </div>
+      <label class="min-w-0 flex-1" style="min-width:18rem">
+        <span class="mb-1 block text-sm font-medium text-gray-700">Repository</span>
+        <input name="url" placeholder="https://github.com/owner/repo"
+               class="block h-10 w-full rounded-lg border border-gray-300 px-3 text-sm">
+      </label>
+      <label style="min-width:8rem">
+        <span class="mb-1 block text-sm font-medium text-gray-700">Branch</span>
+        <input name="branch" value="main"
+               class="block h-10 w-full rounded-lg border border-gray-300 px-3 text-sm">
+      </label>
+      <label style="min-width:8rem">
+        <span class="mb-1 block text-sm font-medium text-gray-700">Directory</span>
+        <input name="path" value="views" placeholder="views"
+               class="block h-10 w-full rounded-lg border border-gray-300 px-3 text-sm">
+      </label>
+      <label style="min-width:10rem">
+        <span class="mb-1 block text-sm font-medium text-gray-700">Theme id</span>
+        <input name="theme_id" placeholder="from the repo name"
+               class="block h-10 w-full rounded-lg border border-gray-300 px-3 text-sm">
+      </label>
+      <button type="submit"
+              class="inline-flex h-10 items-center justify-center rounded-lg bg-indigo-600 px-4 text-sm font-semibold text-white hover:bg-indigo-700">
+        Clone
+      </button>
+    </form>
+    {% unless hasGitHubToken %}
+      <p class="mb-4 rounded-lg bg-amber-50 px-4 py-3 text-sm text-amber-700">
+        Set a GitHub token first: <code>wrangler secret put GITHUB_TOKEN</code>, using a fine-grained token with Contents read and write.
+      </p>
+    {% endunless %}
+  {% endif %}
+
   <div class="overflow-x-auto rounded-xl border border-gray-200 bg-white shadow-sm">
     <table class="w-full min-w-[560px] text-left">
       <thead class="border-b border-gray-200 bg-gray-50">
@@ -29,12 +74,25 @@
               <span class="inline-flex rounded-full bg-amber-50 px-2.5 py-1 text-xs font-semibold text-amber-700">{{ theme.status }}</span>
             </td>
             <td class="px-6 py-4 text-right">
-              <a href="{{ theme.editorHref }}"
-                 title="Edit {{ theme.name }}"
-                 aria-label="Edit {{ theme.name }}"
-                 class="inline-flex h-10 items-center justify-center rounded-lg bg-indigo-600 px-4 text-sm font-semibold text-white hover:bg-indigo-700">
-                Edit theme
-              </a>
+              <div class="flex items-center justify-end gap-2">
+                {% if theme.canPush and canEdit %}
+                  <form method="post" action="{{ pushAction }}" class="shrink-0"
+                        data-confirm="Commit this theme's templates to {{ theme.source }}?">
+                    <input type="hidden" name="theme" value="{{ theme.id }}">
+                    <button type="submit"
+                            title="Commit and push {{ theme.name }} to {{ theme.source }}"
+                            class="inline-flex h-10 items-center justify-center rounded-lg border border-gray-300 bg-white px-4 text-sm font-semibold text-gray-700 hover:bg-gray-50">
+                      Push to GitHub
+                    </button>
+                  </form>
+                {% endif %}
+                <a href="{{ theme.editorHref }}"
+                   title="Edit {{ theme.name }}"
+                   aria-label="Edit {{ theme.name }}"
+                   class="inline-flex h-10 items-center justify-center rounded-lg bg-indigo-600 px-4 text-sm font-semibold text-white hover:bg-indigo-700">
+                  Edit theme
+                </a>
+              </div>
             </td>
           </tr>
         {% else %}

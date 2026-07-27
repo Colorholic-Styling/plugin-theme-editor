@@ -44,11 +44,37 @@ function viewData(overrides: Record<string, unknown> = {}) {
     ],
     pageSelected: true,
     pageSettingsHref: '/admin/plugins/theme-editor/editor',
-    selectedBlock: null,
-    selectedLabel: 'Page settings',
-    selectedType: '',
-    fieldGroups: [],
-    hasFields: false,
+    selectedBlock: 0,
+    selectedLabel: 'Block 1',
+    selectedType: 'hero',
+    schemaMode: false,
+    schemaName: 'Hero',
+    schemaBlock: '0',
+    hasSchema: true,
+    valuesModeHref: '/admin/plugins/theme-editor/editor?theme=colorholic-styling&block=0',
+    schemaModeHref: '/admin/plugins/theme-editor/editor?theme=colorholic-styling&block=0&settings=schema',
+    schemaSettings: [{
+      id: 'theme', label: 'Theme', type: 'select',
+      binding: '{{ page.blocks[0].theme }}',
+      options: [{ value: 'light', label: 'Light', selected: true }],
+      hasOptions: true,
+      inputName: 'setting:theme', path: '/_blocks/0/theme', overridden: false,
+      value: '16-Colour analysis', defaultValue: 'light', multiline: false, editable: true,
+    }],
+    fieldGroups: [{
+      label: 'Block',
+      fields: [{
+        inputName: 'field:/_blocks/0/title/en',
+        label: 'Title',
+        path: '/_blocks/0/title/en',
+        value: 'Hello',
+        badge: 'text',
+        multiline: false,
+        readOnly: false,
+        group: 'Block',
+      }],
+    }],
+    hasFields: true,
     loadAction: '/admin/plugins/theme-editor/editor',
     editorStateJson: JSON.stringify({
       themeId: 'colorholic-styling',
@@ -73,10 +99,12 @@ function viewData(overrides: Record<string, unknown> = {}) {
 
 interface RenderCall { hidden?: string[] }
 
-async function mountEditor(): Promise<{ renders: RenderCall[]; fetchMock: ReturnType<typeof vi.fn> }> {
+async function mountEditor(
+  overrides: Record<string, unknown> = {},
+): Promise<{ renders: RenderCall[]; fetchMock: ReturnType<typeof vi.fn> }> {
   const source = await readFile(editorSection, 'utf8');
   document.body.innerHTML = String(
-    await new Liquid({ outputEscape: 'escape' }).parseAndRender(source, viewData()),
+    await new Liquid({ outputEscape: 'escape' }).parseAndRender(source, viewData(overrides)),
   );
 
   const renders: RenderCall[] = [];
@@ -134,6 +162,153 @@ describe('editor page visibility toggle', () => {
     expect(value.value).toBe('0');
     expect(flag.hidden).toBe(false);
     expect(renders).toEqual([{ hidden: ['hero'] }]);
+  });
+
+  it('shows the settings modes when a block is focused without a reload', async () => {
+    // The page itself is selected, which is what the editor opens on when the
+    // URL carries no block.
+    await mountEditor({ selectedBlock: '', pageSelected: true, schemaBlock: '' });
+    const modes = document.querySelector('[data-theme-editor-modes]') as HTMLElement;
+    expect(modes.hidden).toBe(true);
+
+    const blockLink = document.querySelector('[data-theme-editor-focus][data-block="0"]') as HTMLAnchorElement;
+    blockLink.dispatchEvent(new Event('click', { bubbles: true, cancelable: true }));
+    for (let attempt = 0; attempt < 100 && modes.hidden; attempt += 1) {
+      await new Promise((resolve) => setTimeout(resolve, 5));
+    }
+
+    // Previously these only appeared after a page load, so a locally focused
+    // block had settings but no way to reach its schema.
+    expect(modes.hidden).toBe(false);
+    const schemaLink = modes.querySelector('[data-theme-editor-mode="schema"]') as HTMLAnchorElement;
+    const valuesLink = modes.querySelector('[data-theme-editor-mode="values"]') as HTMLAnchorElement;
+    // And they point at the block that is actually selected.
+    expect(schemaLink.getAttribute('href')).toContain('block=0');
+    expect(schemaLink.getAttribute('href')).toContain('settings=schema');
+    expect(valuesLink.getAttribute('href')).toContain('block=0');
+    expect(valuesLink.getAttribute('href')).not.toContain('settings=schema');
+  });
+
+  it('switches between values and schema without leaving the page', async () => {
+    await mountEditor();
+    const panels = () => Object.fromEntries(
+      [...document.querySelectorAll('[data-theme-editor-panel]')].map((panel) => [
+        panel.getAttribute('data-theme-editor-panel'),
+        { hidden: (panel as HTMLFieldSetElement).hidden, disabled: (panel as HTMLFieldSetElement).disabled },
+      ]),
+    );
+
+    expect(panels()).toEqual({
+      values: { hidden: false, disabled: false },
+      schema: { hidden: true, disabled: true },
+    });
+
+    const schemaLink = document.querySelector('[data-theme-editor-mode="schema"]') as HTMLAnchorElement;
+    const event = new Event('click', { bubbles: true, cancelable: true });
+    schemaLink.dispatchEvent(event);
+
+    // No navigation: the panel was already on the page.
+    expect(event.defaultPrevented).toBe(true);
+    expect(panels()).toEqual({
+      values: { hidden: true, disabled: true },
+      schema: { hidden: false, disabled: false },
+    });
+    expect(document.querySelector('[data-theme-editor]')?.getAttribute('data-settings-mode')).toBe('schema');
+    expect(window.location.search).toContain('settings=schema');
+
+    const valuesLink = document.querySelector('[data-theme-editor-mode="values"]') as HTMLAnchorElement;
+    const back = new Event('click', { bubbles: true, cancelable: true });
+    valuesLink.dispatchEvent(back);
+    expect(back.defaultPrevented).toBe(true);
+    expect(panels().values).toEqual({ hidden: false, disabled: false });
+  });
+
+  it('loads the block from the server when the schema panel is for another one', async () => {
+    await mountEditor();
+    // The server rendered the schema for block 0; selecting another block
+    // leaves it describing something that is no longer on screen.
+    const selected = document.querySelector('[data-theme-editor-selected-block]') as HTMLInputElement;
+    selected.value = '3';
+
+    const schemaLink = document.querySelector('[data-theme-editor-mode="schema"]') as HTMLAnchorElement;
+    const event = new Event('click', { bubbles: true, cancelable: true });
+    schemaLink.dispatchEvent(event);
+
+    expect(event.defaultPrevented).toBe(false);
+  });
+
+  it('updates the hint to what the edited binding resolves to', async () => {
+    const resolved: string[] = [];
+    await mountEditor();
+    (window as unknown as { themeEditorPreview: Record<string, unknown> }).themeEditorPreview.resolve =
+      (binding: string) => {
+        resolved.push(binding);
+        return Promise.resolve(binding === 'hello' ? 'hello' : '16-Colour analysis');
+      };
+
+    // The schema fieldset is disabled until its mode is on, so switch first.
+    (document.querySelector('[data-theme-editor-mode="schema"]') as HTMLAnchorElement)
+      .dispatchEvent(new Event('click', { bubbles: true, cancelable: true }));
+
+    const input = document.querySelector('[data-theme-editor-setting]') as HTMLInputElement;
+    const hint = input.parentElement?.querySelector('[data-theme-editor-setting-value]') as HTMLElement;
+    expect(hint.textContent?.trim()).toBe('16-Colour analysis');
+
+    input.value = 'hello';
+    input.dispatchEvent(new Event('input', { bubbles: true }));
+    for (let attempt = 0; attempt < 200 && hint.textContent?.trim() !== 'hello'; attempt += 1) {
+      await new Promise((resolve) => setTimeout(resolve, 5));
+    }
+
+    // The hint is the binding resolved, so a binding edited to a literal shows
+    // that literal rather than the value the setting used to read.
+    expect(resolved).toContain('hello');
+    expect(hint.textContent?.trim()).toBe('hello');
+  });
+
+  it('loads the chosen page, template, or language on change', async () => {
+    const submit = vi.fn();
+    vi.spyOn(HTMLFormElement.prototype, 'submit').mockImplementation(submit);
+    await mountEditor();
+
+    const loadForm = document.querySelector('[data-theme-editor-load]') as HTMLFormElement;
+    const button = loadForm.querySelector('[data-theme-editor-load-button]') as HTMLButtonElement;
+    // The submit button is only hidden once this script is driving the form.
+    expect(button.hidden).toBe(true);
+
+    const language = loadForm.querySelector('select[name="language"]') as HTMLSelectElement;
+    language.dispatchEvent(new Event('change', { bubbles: true }));
+    expect(submit).toHaveBeenCalledTimes(1);
+
+    const pageSelect = loadForm.querySelector('select[name="page_id"]') as HTMLSelectElement;
+    pageSelect.dispatchEvent(new Event('change', { bubbles: true }));
+    expect(submit).toHaveBeenCalledTimes(2);
+  });
+
+  it('confirms before discarding edits and puts the selector back on cancel', async () => {
+    const submit = vi.fn();
+    vi.spyOn(HTMLFormElement.prototype, 'submit').mockImplementation(submit);
+    await mountEditor();
+
+    // Typing into a settings field is what marks the editor dirty.
+    const field = document.querySelector('[data-theme-editor-form] [name^="field:/"]');
+    if (field) field.dispatchEvent(new Event('input', { bubbles: true }));
+
+    const loadForm = document.querySelector('[data-theme-editor-load]') as HTMLFormElement;
+    const pageSelect = loadForm.querySelector('select[name="page_id"]') as HTMLSelectElement;
+    const loaded = pageSelect.value;
+    const option = document.createElement('option');
+    option.value = '99';
+    pageSelect.appendChild(option);
+    pageSelect.value = '99';
+
+    vi.stubGlobal('confirm', vi.fn(() => false));
+    pageSelect.dispatchEvent(new Event('change', { bubbles: true }));
+
+    expect(submit).not.toHaveBeenCalled();
+    // A selector showing a page that was never loaded would misdescribe the
+    // editor, so cancelling restores it.
+    expect(pageSelect.value).toBe(loaded);
   });
 
   it('leaves the plain form post alone when the frame cannot be redrawn here', async () => {

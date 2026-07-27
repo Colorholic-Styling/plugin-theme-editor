@@ -1,5 +1,5 @@
 import { applyEditorFields } from '../editor-model';
-import { renderThemePreview, type ThemeRuntime } from '../theme/colorholic';
+import { renderThemePreview, resolveThemeBinding, type ThemeRuntime } from '../theme/colorholic';
 import type { ThemeStore } from '../theme/store';
 import type { ThemeTemplate } from '../theme/templates';
 import type { ThemeRenderContext } from '../types';
@@ -27,6 +27,7 @@ interface PreviewData {
   context: ThemeRenderContext;
   template: ThemeTemplate;
   hidden: string[];
+  settingOverrides: Record<string, Record<string, string>>;
   runtime: Omit<ThemeRuntime, 'store'>;
 }
 
@@ -40,6 +41,8 @@ export interface PreviewUpdate {
   fields?: FormData;
   selectedBlock?: number | null;
   hidden?: string[];
+  /** Per section key, the Liquid its declared settings bind to. */
+  settingOverrides?: Record<string, Record<string, string>>;
 }
 
 /** Serves the theme from the bundle fetched once at start-up. */
@@ -73,21 +76,33 @@ function bootstrap(): Bootstrap | null {
   return dataHref && bundleHref ? { dataHref, bundleHref } : null;
 }
 
-/** Resolves once the frame has a document this can write into. */
+/**
+ * The frame's own document, told apart from the `about:blank` a frame holds
+ * until its navigation commits. Readiness cannot be judged by `readyState`,
+ * because that blank document already reports `complete`: rendering into it
+ * puts the theme somewhere the real document is about to replace, which is why
+ * a warm cache — where this script runs before the frame has committed — used
+ * to leave the frame showing nothing but its placeholder.
+ */
+function frameShell(host: HTMLIFrameElement): Document | null {
+  const doc = host.contentDocument;
+  return doc?.querySelector('[data-theme-preview-status]') ? doc : null;
+}
+
 function frameDocument(host: HTMLIFrameElement): Promise<Document> {
-  return new Promise((resolve, reject) => {
-    const ready = (): boolean => {
-      const doc = host.contentDocument;
-      if (!doc || doc.readyState === 'loading') return false;
-      resolve(doc);
-      return true;
+  return new Promise((resolve) => {
+    const shell = frameShell(host);
+    if (shell) {
+      resolve(shell);
+      return;
+    }
+    const onLoad = (): void => {
+      const loaded = host.contentDocument;
+      if (!loaded) return;
+      host.removeEventListener('load', onLoad);
+      resolve(loaded);
     };
-    if (ready()) return;
-    host.addEventListener('load', () => {
-      const doc = host.contentDocument;
-      if (doc) resolve(doc);
-      else reject(new Error('The preview frame is not readable.'));
-    }, { once: true });
+    host.addEventListener('load', onLoad);
   });
 }
 
@@ -142,6 +157,7 @@ async function start(): Promise<void> {
   const runtime: ThemeRuntime = { ...data.runtime, store: new MemoryThemeStore(files) };
   let context = data.context;
   let hidden = new Set(data.hidden);
+  let settingOverrides = data.settingOverrides ?? {};
   let painted = false;
 
   const render = async (update: PreviewUpdate = {}): Promise<void> => {
@@ -153,13 +169,40 @@ async function start(): Promise<void> {
       selectedBlock: update.selectedBlock === undefined ? context.selectedBlock : update.selectedBlock,
     };
     if (update.hidden) hidden = new Set(update.hidden);
-    apply(doc, await renderThemePreview(runtime, context, data.template, hidden), !painted);
+    if (update.settingOverrides) settingOverrides = update.settingOverrides;
+    const html = await renderThemePreview(
+      runtime, context, data.template, hidden, settingOverrides,
+    );
+
+    // Re-read the frame's document rather than trusting the one captured at
+    // start-up: a frame that navigated since then has a new document, and the
+    // old one is detached, so writing to it would silently do nothing.
+    const target = host.contentDocument;
+    if (!target) return;
+    if (target !== doc) {
+      doc = target;
+      painted = false;
+    }
+    apply(doc, html, !painted);
     painted = true;
   };
 
+  // What a template binding resolves to for the page on screen. The editor
+  // shows this under each schema setting, so what it reports is whatever the
+  // section would actually receive.
+  const resolve = (binding: string): Promise<string> =>
+    resolveThemeBinding(runtime, context, binding);
+
   // The parent reads this to decide whether it can re-render in place; without
   // it, every change falls back to reloading the frame.
-  (window as unknown as { themeEditorPreview?: unknown }).themeEditorPreview = { render };
+  (window as unknown as { themeEditorPreview?: unknown }).themeEditorPreview = { render, resolve };
+
+  // A frame showing its placeholder again has been reloaded — by the fallback
+  // path, or by a navigation that beat the first render — and needs redrawing.
+  // Keyed on the placeholder so the document this writes cannot retrigger it.
+  host.addEventListener('load', () => {
+    if (frameShell(host)) void render();
+  });
 
   try {
     await render();

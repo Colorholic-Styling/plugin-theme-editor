@@ -1,6 +1,6 @@
 import type { PluginEnv } from '../types';
 import type { ThemeDefinition } from '../themes';
-import { AssetThemeStore } from './store';
+import type { ThemeStore } from './store';
 
 export interface ThemeTemplate {
   id: string;
@@ -12,8 +12,8 @@ export interface ThemeTemplate {
 export async function themeTemplates(
   env: PluginEnv,
   theme: ThemeDefinition,
+  store: ThemeStore,
 ): Promise<ThemeTemplate[]> {
-  const store = new AssetThemeStore(env.VIEWS, theme.assetPrefix);
   const manifest = JSON.parse(await store.read('/theme-manifest.json')) as unknown;
   if (!isRecord(manifest) || !Array.isArray(manifest.templates)) return [];
 
@@ -40,6 +40,8 @@ export interface TemplateSection {
   type: string;
   label: string;
   blockIndex: number | null;
+  /** The settings the theme's template declares for this section. */
+  settings: Record<string, unknown>;
 }
 
 /**
@@ -48,12 +50,10 @@ export interface TemplateSection {
  * again. Liquid templates declare no sections, so they have none to toggle.
  */
 export async function templateSections(
-  env: PluginEnv,
-  theme: ThemeDefinition,
   template: ThemeTemplate,
+  store: ThemeStore,
 ): Promise<TemplateSection[]> {
   if (template.format !== 'json') return [];
-  const store = new AssetThemeStore(env.VIEWS, theme.assetPrefix);
   let definition: unknown;
   try {
     definition = JSON.parse(await store.read(template.path));
@@ -73,6 +73,7 @@ export async function templateSections(
       type: stringValue(section.type) || (section.source === 'blocks' ? 'blocks' : ''),
       label: humanize(key),
       blockIndex: referencedBlockIndex(section),
+      settings: isRecord(section.settings) ? section.settings : {},
     }];
   });
 }

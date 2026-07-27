@@ -78,13 +78,22 @@ interface PreviewApi {
  * same-origin frame it writes into, because the host strips scripts out of the
  * preview document itself.
  */
-async function startPreview(data: Record<string, unknown> = previewData()): Promise<PreviewApi> {
+/** What the Worker serves into the frame before anything is drawn. */
+const SHELL = '<p class="theme-preview-status" data-theme-preview-status>Loading preview…</p>';
+
+function mountFrame(withShell = true): HTMLIFrameElement {
   document.body.innerHTML = '';
   const host = document.createElement('iframe');
   host.setAttribute('data-theme-editor-preview', '');
   host.setAttribute('data-theme-editor-preview-data', DATA_HREF);
   host.setAttribute('data-theme-editor-preview-bundle', BUNDLE_HREF);
   document.body.appendChild(host);
+  if (withShell && host.contentDocument) host.contentDocument.body.innerHTML = SHELL;
+  return host;
+}
+
+async function startPreview(data: Record<string, unknown> = previewData()): Promise<PreviewApi> {
+  const host = mountFrame();
 
   // The frame is served empty, so the renderer has to fetch both the page and
   // the theme before it can paint anything.
@@ -97,6 +106,7 @@ async function startPreview(data: Record<string, unknown> = previewData()): Prom
 
   const source = await readFile(bundlePath, 'utf8');
   new Function(source)();
+  void host;
 
   const win = window as unknown as { themeEditorPreview?: PreviewApi };
   for (let attempt = 0; attempt < 400 && !previewHtml().includes('hero'); attempt += 1) {
@@ -170,6 +180,63 @@ describe('browser preview renderer', () => {
 
     await preview.render({ hidden: ['hero'] });
     expect(previewHtml()).not.toContain('hero hero--cream');
+  });
+
+  it('waits for the frame to commit instead of drawing into its blank document', async () => {
+    // A warm cache runs this script before the frame's navigation commits, so
+    // the frame still holds the blank document every iframe starts with — which
+    // already reports readyState "complete". Drawing there put the theme
+    // somewhere the real document then replaced, leaving the placeholder.
+    const host = mountFrame(false);
+    const files = await themeBundle();
+    vi.stubGlobal('fetch', vi.fn(async (href: string) => new Response(
+      JSON.stringify(href.startsWith(BUNDLE_HREF.split('?')[0]) ? files : previewData()),
+      { headers: { 'content-type': 'application/json' } },
+    )));
+
+    new Function(await readFile(bundlePath, 'utf8'))();
+    await new Promise((resolve) => setTimeout(resolve, 60));
+    expect(previewHtml()).not.toContain('hero hero--cream');
+
+    // The frame commits: now there is a real document to draw into.
+    if (host.contentDocument) host.contentDocument.body.innerHTML = SHELL;
+    host.dispatchEvent(new Event('load'));
+    for (let attempt = 0; attempt < 400 && !previewHtml().includes('hero'); attempt += 1) {
+      await new Promise((resolve) => setTimeout(resolve, 5));
+    }
+    expect(previewHtml()).toContain('hero hero--cream');
+    expect(previewHtml()).not.toContain('Loading preview');
+  });
+
+  it('redraws when the frame is reloaded back to its placeholder', async () => {
+    await startPreview();
+    expect(previewHtml()).toContain('hero hero--cream');
+
+    // The fallback path reloads the frame; the renderer has to notice and draw
+    // again rather than leave the placeholder showing.
+    const host = document.querySelector('[data-theme-editor-preview]') as HTMLIFrameElement;
+    if (host.contentDocument) host.contentDocument.body.innerHTML = SHELL;
+    host.dispatchEvent(new Event('load'));
+    for (let attempt = 0; attempt < 400 && !previewHtml().includes('hero'); attempt += 1) {
+      await new Promise((resolve) => setTimeout(resolve, 5));
+    }
+    expect(previewHtml()).toContain('hero hero--cream');
+  });
+
+  it('resolves a binding against the page the preview is showing', async () => {
+    const preview = await startPreview() as PreviewApi & { resolve(binding: string): Promise<string> };
+
+    // What the schema panel shows under each setting: the binding put through
+    // the same render data the section would receive.
+    expect(await preview.resolve('{{ page.blocks[0].title }}')).toBe('Hello from the browser');
+    expect(await preview.resolve('{{ page.blocks[0].theme }}')).toBe('cream');
+
+    // A binding edited to a literal resolves to that literal, which is the
+    // whole point of the hint following the binding rather than the stored
+    // value it started from.
+    expect(await preview.resolve('hello')).toBe('hello');
+    expect(await preview.resolve('{{ page.blocks[0].primary.label }}')).toBe('Book');
+    expect(await preview.resolve('{{ page.blocks[0].nothing }}')).toBe('');
   });
 
   it('redraws the frame from a visibility toggle without reloading anything', async () => {
