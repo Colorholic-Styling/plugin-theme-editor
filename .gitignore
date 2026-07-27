@@ -3,3 +3,4 @@ node_modules/
 .dev.vars
 views/theme/
 
+views/assets/theme-preview.js

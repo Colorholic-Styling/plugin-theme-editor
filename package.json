@@ -5,12 +5,15 @@
   "type": "module",
   "scripts": {
     "theme:sync": "node scripts/sync-theme.mjs",
-    "predev": "npm run theme:sync",
-    "dev": "wrangler dev --port 8798",
-    "predeploy": "npm run theme:sync",
+    "theme:watch": "node scripts/sync-theme.mjs --watch",
+    "build:preview": "esbuild src/browser/preview.ts --bundle --format=iife --minify --platform=browser --target=es2020 --outfile=views/assets/theme-preview.js",
+    "predev": "npm run theme:sync && npm run build:preview",
+    "dev": "trap 'kill 0' EXIT INT TERM; npm run theme:watch & wrangler dev --port 8798",
+    "predeploy": "npm run theme:sync && npm run build:preview",
     "deploy": "wrangler deploy",
+    "pretest": "npm run theme:sync && npm run build:preview",
     "test": "vitest run",
-    "typecheck": "tsc --noEmit",
+    "typecheck": "tsc --noEmit && tsc --noEmit -p tsconfig.browser.json",
     "kv:setup": "cms-plugin-kv-setup",
     "kv:setup:preview": "cms-plugin-kv-setup --preview"
   },
@@ -19,10 +22,12 @@
     "liquidjs": "^10.27.2"
   },
   "devDependencies": {
-    "@cloudflare/workers-types": "^5.20260719.1",
+    "@cloudflare/workers-types": "^5.20260726.1",
     "@types/node": "^26.1.1",
+    "esbuild": "^0.28.1",
+    "happy-dom": "^20.11.1",
     "typescript": "^7.0.2",
     "vitest": "^4.1.10",
-    "wrangler": "^4.112.0"
+    "wrangler": "^4.114.0"
   }
 }

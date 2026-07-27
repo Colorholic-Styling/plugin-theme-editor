@@ -2,6 +2,8 @@ import type { CmsClientEnv, CmsPage } from '@lionrockjs/worker-cms-plugin';
 
 export interface PluginEnv extends CmsClientEnv {
   TENANTS?: KVNamespace;
+  /** Per-template editor overrides; reads degrade to defaults when unbound. */
+  THEME_OVERRIDES?: KVNamespace;
   VIEWS: Fetcher;
   CF_VERSION_METADATA?: WorkerVersionMetadata;
   THEME_NAME?: string;

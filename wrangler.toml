@@ -21,6 +21,16 @@ THEME_SITE_TITLE = "Colorholic Styling"
 THEME_LANGUAGES = "zh-hant,en"
 THEME_BOOKING_URL = "https://www.fresha.com/zh-HK/a/colorholic-stylingxi-se-sheng-zhuang-xue-yuan-kowloon-flat-e-21-f-po-shau-centre-115-how-ming-street-yiqcq1bx"
 
+# Section visibility is a per-template decision, and the theme bundle under
+# views/theme/ is a read-only asset subtree that `npm run theme:sync`
+# regenerates, so those overrides need their own writable store. Local
+# `wrangler dev` runs against Miniflare's on-disk KV and ignores this id;
+# provision a real namespace before deploying with:
+#   npm run kv:setup -- --binding=THEME_OVERRIDES
+[[kv_namespaces]]
+binding = "THEME_OVERRIDES"
+id = "REPLACE_WITH_THEME_EDITOR_OVERRIDES_KV_ID"
+
 # Set this plugin's dedicated CMS registration secret with:
 #   wrangler secret put PLUGIN_SECRET
 #

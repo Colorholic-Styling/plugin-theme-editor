@@ -5,7 +5,7 @@
   "nav": [
     {
       "label": "Theme Editor",
-      "href": "editor",
+      "href": "",
       "roles": ["admin", "editor"]
     }
   ],
@@ -19,9 +19,18 @@
       "label": "Theme editor: update page content"
     }
   ],
+  "assets": [
+    {
+      "path": "/assets/theme-editor.js",
+      "label": "Theme editor local block composer"
+    },
+    {
+      "path": "/assets/theme-preview.js",
+      "label": "Theme editor in-browser preview renderer"
+    }
+  ],
   "contentTypes": {
     "readTypes": ["*"],
     "writeTypes": ["*"]
   }
 }
-

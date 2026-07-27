@@ -1,8 +1,8 @@
-import { Liquid } from 'liquidjs';
+import { Liquid, TypeGuards } from 'liquidjs';
 import type { ThemeStore } from './store';
 
 function engine(store: ThemeStore, globals: Record<string, unknown>): Liquid {
-  return new Liquid({
+  const liquid = new Liquid({
     cache: true,
     extname: '.liquid',
     globals,
@@ -33,6 +33,47 @@ function engine(store: ThemeStore, globals: Record<string, unknown>): Liquid {
       },
     },
   });
+  registerSchemaTag(liquid);
+  return liquid;
+}
+
+/**
+ * Shopify section schemas are editor metadata. LiquidJS does not provide this
+ * tag, so consume its body without rendering it and validate the JSON while
+ * the template is parsed.
+ */
+function registerSchemaTag(liquid: Liquid): void {
+  liquid.registerTag('schema', {
+    parse(token, remainTokens) {
+      const source: string[] = [];
+      for (let next = remainTokens.shift(); next !== undefined; next = remainTokens.shift()) {
+        if (TypeGuards.isTagToken(next) && next.name === 'endschema') {
+          assertSchemaJson(source.join(''), token.file);
+          return;
+        }
+        source.push(next.getText());
+      }
+      throw new Error(
+        `Invalid section schema in ${token.file ?? 'template'}: {% schema %} is not closed`,
+      );
+    },
+    render(): string {
+      return '';
+    },
+  });
+}
+
+function assertSchemaJson(source: string, file: string | undefined): void {
+  let schema: unknown;
+  try {
+    schema = JSON.parse(source);
+  } catch (error) {
+    const message = error instanceof Error ? error.message : String(error);
+    throw new Error(`Invalid section schema in ${file ?? 'template'}: ${message}`);
+  }
+  if (!schema || typeof schema !== 'object' || Array.isArray(schema)) {
+    throw new Error(`Invalid section schema in ${file ?? 'template'}: must be a JSON object`);
+  }
 }
 
 export async function renderThemeSource(
@@ -42,4 +83,3 @@ export async function renderThemeSource(
 ): Promise<string> {
   return String(await engine(store, data).parseAndRender(source, data));
 }
-

@@ -63,7 +63,8 @@ export function blockChoices(
       const title = localizedValue(block.title, language)
         || localizedValue(block.eyebrow, language)
         || humanize(type);
-      const href = `${editorBase}?page_id=${page.id}&language=${encodeURIComponent(language)}&block=${index}`;
+      const separator = editorBase.includes('?') ? '&' : '?';
+      const href = `${editorBase}${separator}page_id=${page.id}&language=${encodeURIComponent(language)}&block=${index}`;
       return {
         index,
         type,
@@ -111,6 +112,9 @@ function flattenRecord(
   },
 ): void {
   for (const [key, value] of Object.entries(record)) {
+    // These keys define structure/order and are represented by the block
+    // heading/selection UI rather than editable settings inputs.
+    if (READ_ONLY_KEYS.has(key)) continue;
     if (state.skipBlocks && key === '_blocks') continue;
     const path = [...state.path, key];
 
@@ -159,7 +163,7 @@ function flattenRecord(
       kind: key.startsWith('_') ? 'structure' : state.path.at(-1) === '_pointers' ? 'pointer' : 'attribute',
       badge: key.startsWith('_') ? 'system' : state.path.at(-1) === '_pointers' ? 'pointer' : 'attribute',
       group: state.group,
-      readOnly: READ_ONLY_KEYS.has(key),
+      readOnly: false,
     });
   }
 }
@@ -280,4 +284,3 @@ function humanize(value: string): string {
     .trim();
   return label ? `${label[0].toUpperCase()}${label.slice(1)}` : 'Value';
 }
-

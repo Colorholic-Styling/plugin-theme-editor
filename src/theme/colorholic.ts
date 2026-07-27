@@ -4,7 +4,8 @@ import type { PluginEnv, ThemeRenderContext } from '../types';
 import { mediaUrl, plainText, richText, safeUrl } from './html';
 import { attr, indexedBlocks, items, localized, text, truthy, type Lect } from './lect';
 import { renderThemeSource } from './liquid';
-import { AssetThemeStore } from './store';
+import { AssetThemeStore, VirtualThemeStore, type ThemeStore } from './store';
+import { referencedBlockIndex, type ThemeTemplate } from './templates';
 
 const BLOCK_TYPES = [
   'hero', 'rich-text', 'media-text', 'features', 'services', 'steps', 'gallery',
@@ -12,29 +13,45 @@ const BLOCK_TYPES = [
   'divider',
 ] as const;
 
-const PREVIEW_TEMPLATE = `
-{% layout '/layout/default' %}
-{% block content %}
-  {% if page.showTitle and page.title != blank %}
-  <header class="page-head section section--cream">
-    <div class="section__inner">
-      <h1 class="page-head__title">{{ page.title | escape }}</h1>
-      {% if page.subtitle != blank %}<p class="page-head__subtitle">{{ page.subtitle | escape }}</p>{% endif %}
-    </div>
-  </header>
-  {% endif %}
-  {% for section in sections %}
-    <div class="theme-editor-block{% if section.editorSelected %} is-selected{% endif %}">
-      <a class="theme-editor-select"
-         target="_top"
-         href="{{ section.editorHref | escape }}"
-         aria-label="Edit {{ section.type | escape }} block">
-        <span>Edit {{ section.type | escape }}</span>
-      </a>
-      {% render section.template, block: section %}
-    </div>
-  {% endfor %}
-{% endblock %}`;
+/**
+ * Selection overlays live on each block's own template rather than around a
+ * loop the plugin controls. A JSON template may delegate the block loop to a
+ * theme section — `{ "type": "content" }` rendering `{% render item.template %}`
+ * — in which case the plugin never sees the iteration, so wrapping there would
+ * silently drop every overlay.
+ */
+const EDITOR_BLOCK_TEMPLATE = '/theme-editor/block';
+
+const EDITOR_BLOCK_SOURCE = overlayWrapped(
+  'section',
+  '{% render section.editorTemplate, block: section, section: section %}',
+  false,
+);
+
+/**
+ * Selection overlay around whatever renders one CMS block. `guarded` covers the
+ * case where the bound block may not exist on the page, which a JSON template
+ * cannot know when it names a fixed block index.
+ */
+function overlayWrapped(variable: string, inner: string, guarded: boolean): string {
+  const open = `<div class="theme-editor-block{% if ${variable}.editorSelected %} is-selected{% endif %}"
+     data-theme-editor-block="{{ ${variable}.editorIndex }}">
+  <a class="theme-editor-select"
+     target="_top"
+     href="{{ ${variable}.editorHref | escape }}"
+     aria-label="Edit {{ ${variable}.type | escape }} block">
+    <span>Edit {{ ${variable}.type | escape }}</span>
+  </a>`;
+  return guarded
+    ? `{% if ${variable} %}${open}{% endif %}\n${inner}\n{% if ${variable} %}</div>{% endif %}`
+    : `${open}\n${inner}\n</div>`;
+}
+
+/** Block loop for templates that leave block rendering to the plugin. */
+const CMS_SECTIONS_SOURCE = `
+{% for cmsBlock in blocks %}
+    {% render cmsBlock.template, block: cmsBlock, section: cmsBlock %}
+{% endfor %}`;
 
 const PREVIEW_STYLE = `<style>
 .theme-editor-block{position:relative}
@@ -45,20 +62,57 @@ const PREVIEW_STYLE = `<style>
 .theme-editor-block.is-selected>.theme-editor-select{border-color:#4f46e5;box-shadow:inset 0 0 0 2px rgba(255,255,255,.9)}
 </style>`;
 
+/**
+ * Everything the renderer needs from its host. Keeping this to plain values and
+ * a `ThemeStore` is what lets the identical projection run on the Worker and in
+ * the browser: a preview that re-implemented any of this would be free to drift
+ * from what the Worker renders, which is the one thing a preview must not do.
+ */
+export interface ThemeRuntime {
+  store: ThemeStore;
+  siteTitle: string;
+  bookingUrl: string;
+  assetVersion: string;
+}
+
+export function themeRuntime(env: PluginEnv, store: ThemeStore): ThemeRuntime {
+  return {
+    store,
+    siteTitle: env.THEME_SITE_TITLE || '',
+    bookingUrl: env.THEME_BOOKING_URL || '',
+    assetVersion: env.CF_VERSION_METADATA?.id?.slice(0, 8) || 'dev',
+  };
+}
+
+export function previewThemeStore(base: ThemeStore): ThemeStore {
+  return new VirtualThemeStore(base, {
+    [`${EDITOR_BLOCK_TEMPLATE}.liquid`]: EDITOR_BLOCK_SOURCE,
+  });
+}
+
 export async function renderThemePreview(
-  env: PluginEnv,
+  runtime: ThemeRuntime,
   context: ThemeRenderContext,
+  template: ThemeTemplate,
+  hidden: ReadonlySet<string> = new Set(),
 ): Promise<string> {
   const chain = languageChain(context.language, context.defaultLanguage, context.languages);
   const labels = strings(context.language);
   const sections = blockViewModels(context.page, chain, context).map((section) => ({
     ...section,
+    settings: section,
+    editorTemplate: section.template,
+    template: EDITOR_BLOCK_TEMPLATE,
     editorHref: `${context.editorHref}&block=${section.editorIndex}`,
     editorSelected: section.editorIndex === context.selectedBlock,
   }));
-  const site = siteModel(env, context.settings, context.pages, chain, labels);
+  const site = siteModel(runtime, context.settings, context.pages, chain, labels);
   const pageTitle = localized(context.page.lect, 'title', chain) || context.page.name;
-  const html = await renderThemeSource(new AssetThemeStore(env.VIEWS), PREVIEW_TEMPLATE, {
+  const pageSubtitle = localized(context.page.lect, 'subtitle', chain);
+  const articles = context.news.map((articlePage) => newsArticleModel(articlePage, chain));
+  const article = newsArticleModel(context.page, chain);
+  const store = runtime.store;
+  const renderData: Record<string, unknown> = {
     lang: context.language === 'mis' ? context.defaultLanguage : context.language,
     language: context.language,
     prefix: '',
@@ -71,7 +125,7 @@ export async function renderThemePreview(
       active: code === context.language,
     })),
     canonicalOrigin: '',
-    assetVersion: env.CF_VERSION_METADATA?.id?.slice(0, 8) || 'dev',
+    assetVersion: runtime.assetVersion,
     meta: {
       title: `${pageTitle} — ${site.brand}`,
       description: plainText(localized(context.page.lect, 'meta_description', chain), 200),
@@ -80,15 +134,164 @@ export async function renderThemePreview(
     },
     page: {
       title: pageTitle,
-      subtitle: localized(context.page.lect, 'subtitle', chain),
+      subtitle: pageSubtitle,
       showTitle: !indexedBlocks(context.page.lect).some(({ block }) => attr(block, '_type') === 'hero'),
+      blocks: sections,
     },
+    heading: pageTitle,
+    intro: pageSubtitle || labels.newsIntro,
+    articles,
+    hasArticles: articles.length > 0,
+    article,
+    code: attr(context.page.lect, 'code') || String(context.page.id),
+    message: localized(context.page.lect, 'message', chain)
+      || localized(context.page.lect, 'body', chain),
+    blocks: sections,
     sections,
-  });
+  };
+  const compiledTemplate = await previewTemplateSource(store, template, renderData, hidden);
+  renderData.templateSections = compiledTemplate.sections;
+  const html = await renderThemeSource(store, compiledTemplate.source, renderData);
 
   return html
     .replace('</head>', `${PREVIEW_STYLE}</head>`)
     .replaceAll('href="/assets/site.css', `href="${ADMIN_BASE}/theme/assets/site.css`);
+}
+
+async function previewTemplateSource(
+  store: ThemeStore,
+  template: ThemeTemplate,
+  data: Record<string, unknown>,
+  hidden: ReadonlySet<string>,
+): Promise<{ source: string; sections: Record<string, unknown> }> {
+  const source = await store.read(template.path);
+  if (template.format === 'liquid') return { source, sections: {} };
+
+  const definition = JSON.parse(source) as unknown;
+  if (!isRecord(definition)) throw new Error(`Invalid theme template: ${template.id}`);
+  const layout = safeTemplateToken(definition.layout) || 'default';
+  const sections = isRecord(definition.sections) ? definition.sections : {};
+  // Hiding a section drops it from the order the preview compiles, leaving the
+  // theme's own template file untouched.
+  const order = Array.isArray(definition.order)
+    ? definition.order.filter((key): key is string => typeof key === 'string' && !hidden.has(key))
+    : [];
+  const templateSections: Record<string, unknown> = {};
+  const renderedSections: string[] = [];
+  for (const [index, key] of order.entries()) {
+    const section = sections[key];
+    if (!isRecord(section)) continue;
+    if (section.source !== undefined) {
+      if (section.source !== 'blocks') {
+        throw new Error(`Invalid theme template ${template.id}: unsupported source "${String(section.source)}"`);
+      }
+      renderedSections.push(CMS_SECTIONS_SOURCE);
+      continue;
+    }
+    const type = safeTemplateToken(section.type);
+    if (!type) continue;
+    if (type === 'cms-sections') {
+      renderedSections.push(CMS_SECTIONS_SOURCE);
+      continue;
+    }
+    const variable = `s${index}`;
+    templateSections[variable] = {
+      id: key,
+      type,
+      settings: await resolveTemplateValue(store, section.settings ?? {}, data),
+      blocks: await resolveTemplateBlocks(store, section, data),
+    };
+    const renderCall = `{% render '/sections/${type}', section: templateSections.${variable} %}`;
+    const boundBlock = referencedBlockIndex(section);
+    renderedSections.push(boundBlock === null
+      ? renderCall
+      : `{% assign cmsBlock = page.blocks[${boundBlock}] %}\n${overlayWrapped('cmsBlock', renderCall, true)}`);
+  }
+  const wrapper = wrapperTags(definition.wrapper);
+
+  return {
+    source: `
+{% layout '/layout/${layout}' %}
+{% block content %}
+${wrapper.open}
+${renderedSections.join('\n')}
+${wrapper.close}
+{% endblock %}`,
+    sections: templateSections,
+  };
+}
+
+async function resolveTemplateBlocks(
+  store: ThemeStore,
+  section: Record<string, unknown>,
+  data: Record<string, unknown>,
+): Promise<unknown[]> {
+  if (!isRecord(section.blocks)) return [];
+  const requestedOrder = Array.isArray(section.block_order)
+    ? section.block_order.filter((id): id is string => typeof id === 'string')
+    : Object.keys(section.blocks);
+  const blocks: unknown[] = [];
+  for (const id of requestedOrder) {
+    const block = section.blocks[id];
+    if (!isRecord(block)) continue;
+    blocks.push({
+      id,
+      type: safeTemplateToken(block.type),
+      settings: await resolveTemplateValue(store, block.settings ?? {}, data),
+    });
+  }
+  return blocks;
+}
+
+async function resolveTemplateValue(
+  store: ThemeStore,
+  value: unknown,
+  data: Record<string, unknown>,
+): Promise<unknown> {
+  if (typeof value === 'string') {
+    return value.includes('{{') || value.includes('{%')
+      ? renderThemeSource(store, value, data)
+      : value;
+  }
+  if (Array.isArray(value)) {
+    return Promise.all(value.map((item) => resolveTemplateValue(store, item, data)));
+  }
+  if (!isRecord(value)) return value;
+
+  const resolved = await Promise.all(Object.entries(value).map(async ([key, item]) => [
+    key,
+    await resolveTemplateValue(store, item, data),
+  ] as const));
+  return Object.fromEntries(resolved);
+}
+
+function wrapperTags(value: unknown): { open: string; close: string } {
+  if (typeof value !== 'string' || !/^[a-z][a-z0-9]*(?:\.[a-z][a-z0-9_-]*)*$/i.test(value)) {
+    return { open: '', close: '' };
+  }
+  const [tag, ...classes] = value.split('.');
+  return {
+    open: `<${tag}${classes.length ? ` class="${classes.join(' ')}"` : ''}>`,
+    close: `</${tag}>`,
+  };
+}
+
+function safeTemplateToken(value: unknown): string {
+  return typeof value === 'string' && /^[a-z0-9][a-z0-9-]*$/.test(value)
+    ? value
+    : '';
+}
+
+function newsArticleModel(page: CmsPage, chain: string[]): Record<string, unknown> {
+  return {
+    title: localized(page.lect, 'title', chain) || page.name,
+    href: '#',
+    summary: localized(page.lect, 'summary', chain),
+    picture: mediaUrl(text(page.lect, 'picture', chain)),
+    bodyHtml: richText(localized(page.lect, 'body', chain)),
+    dateText: page.start?.slice(0, 10) || page.created_at.slice(0, 10),
+    dateIso: page.start || page.created_at,
+  };
 }
 
 function blockViewModels(
@@ -289,14 +492,14 @@ function blockViewModel(
 }
 
 function siteModel(
-  env: PluginEnv,
+  runtime: ThemeRuntime,
   settings: CmsPage | null,
   pages: CmsPage[],
   chain: string[],
   labels: ReturnType<typeof strings>,
 ): Record<string, unknown> {
   const lect = settings?.lect ?? {};
-  const bookingHref = safeUrl(text(lect, 'booking_url', chain)) || safeUrl(env.THEME_BOOKING_URL || '');
+  const bookingHref = safeUrl(text(lect, 'booking_url', chain)) || safeUrl(runtime.bookingUrl);
   const configuredNav = items(lect, 'nav').map((row) => ({
     label: localized(row, 'label', chain),
     href: safeUrl(text(row, 'url', chain)) || '#',
@@ -312,7 +515,7 @@ function siteModel(
   const phone = text(lect, 'phone', chain);
   const email = text(lect, 'email', chain);
   return {
-    brand: localized(lect, 'brand', chain) || settings?.name || env.THEME_SITE_TITLE || 'Theme preview',
+    brand: localized(lect, 'brand', chain) || settings?.name || runtime.siteTitle || 'Theme preview',
     tagline: localized(lect, 'tagline', chain),
     logo: mediaUrl(text(lect, 'logo', chain)),
     description: plainText(localized(lect, 'description', chain), 200),
@@ -422,4 +625,8 @@ function columnToken(value: string, fallback: number): number {
 
 function slugToken(value: string): string {
   return value.trim().toLowerCase().replace(/[^a-z0-9_-]/g, '').slice(0, 64);
+}
+
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return Boolean(value) && typeof value === 'object' && !Array.isArray(value);
 }
