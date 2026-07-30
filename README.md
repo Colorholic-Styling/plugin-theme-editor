@@ -332,34 +332,105 @@ the dashboard shows those themes as `owner/repo@branch` and gives them a
 name, so a repository holding a site alongside its theme brings across just the
 theme.
 
-It needs a fine-grained token with **Contents: read and write**. For a single
-deployment that is a Worker secret:
+#### GitHub App connection (recommended)
+
+The dashboard supports a Shopify-style **Connect GitHub** flow. GitHub handles
+sign-in and lets the installer grant either all repositories or only selected
+repositories. The plugin stores the installation id and account label in a
+dedicated tenant-scoped KV namespace; it never stores the temporary GitHub user
+token. Clone and push mint a new one-hour installation token as needed.
+
+Create a GitHub App under the account or organisation that will own the
+integration:
+
+1. Set the callback URL to the plugin Worker's public origin plus
+   `/__plugin/github/callback`, for example
+   `https://worker-cms-plugin-theme-editor.example.workers.dev/__plugin/github/callback`.
+   This is deliberately the Worker endpoint, not the CMS admin URL.
+2. Enable **Request user authorization (OAuth) during installation**. The
+   callback uses that short-lived user authorization to verify that the person
+   returning from GitHub can really access the installation id; GitHub warns
+   against trusting the query parameter by itself.
+3. Under repository permissions set **Contents: Read and write**. No
+   organisation permissions or webhook events are required.
+4. Choose **Any account** when several customer organisations will install the
+   App. A private App is enough when it will only ever be installed on its
+   owner's account.
+5. Generate a private key and record the App id, slug, client id, and client
+   secret. Leave **Redirect on update** off; **Manage repositories** opens
+   GitHub in a new tab and the dashboard sees the new selection when reloaded.
+
+Provision the connection registry:
 
 ```bash
-wrangler secret put GITHUB_TOKEN
+npm run kv:setup -- --binding=GITHUB_CONNECTIONS
 ```
 
-For a Worker serving several CMS hosts the token belongs to the *tenant*, not
-the Worker, since each pushes to its own repository. Put it in the tenant's
-`vars` in the `TENANTS` registry and nothing here changes — `tenantClientEnv`
-spreads `tenant.vars` last, so `env.GITHUB_TOKEN` is that tenant's token:
+Put the non-secret App identity in `[vars]`:
+
+```toml
+[vars]
+GITHUB_APP_ID = "123456"
+GITHUB_APP_SLUG = "zeroxcms-theme-editor"
+GITHUB_APP_CLIENT_ID = "Iv1.example"
+```
+
+Store all credentials through Wrangler's hidden secret prompt:
+
+```bash
+npx wrangler secret put GITHUB_APP_PRIVATE_KEY
+npx wrangler secret put GITHUB_APP_CLIENT_SECRET
+npx wrangler secret put GITHUB_APP_STATE_SECRET
+```
+
+Paste the complete downloaded PEM, including its `BEGIN`/`END` lines, for
+`GITHUB_APP_PRIVATE_KEY`. The Worker accepts GitHub's PKCS#1 download format as
+well as PKCS#8. Use an independently generated random value of at least 32
+characters for `GITHUB_APP_STATE_SECRET`.
+
+The connect request originates inside an authenticated CMS admin request and
+places the CMS tenant id, acting user id, expiry, and random nonce in an
+HMAC-signed ten-minute `state`. The public callback validates that state,
+exchanges the one-time code, asks GitHub which installations the user can
+access, checks **Contents: write**, and only then stores:
 
 ```json
 {
-  "cmsUrl": "https://cms1.example.com",
-  "secret": "…",
-  "vars": { "GITHUB_TOKEN": "github_pat_…" }
+  "installationId": 12345678,
+  "accountLogin": "example-org",
+  "accountType": "Organization",
+  "repositorySelection": "selected",
+  "manageUrl": "https://github.com/organizations/example-org/settings/installations/12345678",
+  "connectedAt": "2026-07-31T00:00:00.000Z"
 }
 ```
 
-Spread last also means a tenant's token overrides the Worker secret, so one
-host can be pointed at its own repository while the rest share a default. The
-trade-off is that KV values can be read back through the API while a Worker
-secret cannot, so prefer the secret when a single token serves everything.
+The key uses the CMS tenant's opaque ref, so two CMS hosts connected to one
+plugin Worker cannot read, replace, or disconnect one another's installation.
+Disconnecting in the dashboard removes only this CMS pairing; it does not
+uninstall the App on GitHub.
 
-Without a token the dashboard says so and refuses before making any request;
-the same is true with no bucket to clone into. Push is gated on
-`theme-editor:write` and confirms before it commits.
+#### Personal-token fallback
+
+Existing deployments can continue using a fine-grained personal token with
+**Contents: read and write**:
+
+```bash
+npx wrangler secret put GITHUB_TOKEN
+```
+
+If a tenant has a connected GitHub App, the installation always wins; the
+plugin does not silently fall back to a broader deployment token when that
+installation expires, is suspended, or loses repository access.
+
+For a multi-tenant Worker that cannot yet use the GitHub App, a tenant-specific
+`GITHUB_TOKEN` may still be placed in that tenant record's `vars`. KV values
+can be read back by operators, unlike Worker secrets, which is why the GitHub
+App installation is the preferred multi-tenant path.
+
+Without an App installation or fallback token the dashboard says so and refuses
+before making any GitHub request; the same is true with no bucket to clone
+into. Connect, disconnect, clone, and push are gated on `theme-editor:write`.
 
 ### Writing edits back into the theme
 

@@ -23,9 +23,16 @@ import {
   GitHubClient,
   GitHubError,
   parseRepo,
+  repoFromFullName,
   repoFromUrl,
   type GitHubRepo,
 } from './theme/github';
+import {
+  disconnectGitHubApp,
+  githubAccess,
+  githubAppDashboard,
+  githubInstallUrl,
+} from './theme/github-app';
 import { isWritable, R2ThemeStore } from './theme/store';
 
 import {
@@ -114,6 +121,8 @@ export async function handleThemeEditorAdmin(
   if (section === 'github') {
     if (!access.canEdit) return forbidden();
     if (request.method !== 'POST') return redirect(ADMIN_BASE);
+    if (segments[1] === 'connect') return connectGitHubApp(request, env);
+    if (segments[1] === 'disconnect') return disconnectGitHub(request, env);
     return segments[1] === 'push'
       ? pushThemeToGitHub(request, env)
       : cloneThemeFromGitHub(request, env);
@@ -158,7 +167,23 @@ async function themesDashboard(
   url: URL,
   access: ThemeEditorAccess,
 ): Promise<Response> {
-  const themes = await availableThemes(env);
+  // Repository names may be private. A view-only CMS user can see themes but
+  // must not cause an installation token to be minted or receive GitHub
+  // connection metadata in the client-view payload.
+  const githubDashboard = access.canEdit
+    ? githubAppDashboard(env)
+    : Promise.resolve({
+      configured: false,
+      configurationMessage: '',
+      connected: false,
+      connection: null,
+      repositories: [],
+      error: '',
+    });
+  const [themes, github] = await Promise.all([
+    availableThemes(env),
+    githubDashboard,
+  ]);
   return adminView(env.VIEWS, 'Theme Editor', 'themes', {
     title: 'Themes',
     description: 'Choose an available theme to preview and edit its CMS page content.',
@@ -168,7 +193,18 @@ async function themesDashboard(
       canPush: Boolean(theme.repo),
     })),
     canEdit: access.canEdit,
-    hasGitHubToken: Boolean(env.GITHUB_TOKEN),
+    hasGitHubToken: access.canEdit && Boolean(env.GITHUB_TOKEN),
+    githubAppConfigured: github.configured,
+    githubAppConfigurationMessage: github.configurationMessage,
+    githubConnected: github.connected,
+    githubAccount: github.connection?.accountLogin ?? '',
+    githubAccountType: github.connection?.accountType ?? '',
+    githubRepositorySelection: github.connection?.repositorySelection ?? '',
+    githubManageHref: github.connection?.manageUrl ?? '',
+    githubRepositories: github.repositories,
+    githubError: github.error,
+    githubConnectAction: `${ADMIN_BASE}/github/connect`,
+    githubDisconnectAction: `${ADMIN_BASE}/github/disconnect`,
     cloneAction: `${ADMIN_BASE}/github`,
     pushAction: `${ADMIN_BASE}/github/push`,
     flash: url.searchParams.get('flash') || '',
@@ -521,15 +557,27 @@ async function toggleSectionVisibility(request: Request, env: PluginEnv): Promis
 /** Reads a repository's theme directory into the bucket as a theme folder. */
 async function cloneThemeFromGitHub(request: Request, env: PluginEnv): Promise<Response> {
   const form = await request.formData();
-  const gate = gitHubReady(env);
-  if (gate) return gate;
+  const ready = await gitHubClient(env);
+  if (ready instanceof Response) return ready;
 
   const url = formString(form.get('url'));
   const fromUrl = url ? repoFromUrl(url) : null;
+  const fromSelection = repoFromFullName(formString(form.get('repository')));
+  const requestedBranch = formString(form.get('branch'));
+  const owner = formString(form.get('owner')) || fromSelection?.owner || fromUrl?.owner;
+  const repoName = formString(form.get('repo')) || fromSelection?.repo || fromUrl?.repo;
+  let branch = requestedBranch;
+  if (!branch && fromSelection && owner && repoName) {
+    try {
+      branch = await ready.client.defaultBranch(owner, repoName);
+    } catch (error) {
+      return githubResult(request, false, gitHubMessage(error));
+    }
+  }
   const repo = parseRepo({
-    owner: formString(form.get('owner')) || fromUrl?.owner,
-    repo: formString(form.get('repo')) || fromUrl?.repo,
-    branch: formString(form.get('branch')),
+    owner,
+    repo: repoName,
+    branch,
     path: formString(form.get('path')),
   });
   if (!repo) return githubResult(request, false, 'Enter a GitHub repository, or paste its URL.');
@@ -540,8 +588,7 @@ async function cloneThemeFromGitHub(request: Request, env: PluginEnv): Promise<R
   }
 
   try {
-    const client = new GitHubClient(env.GITHUB_TOKEN as string);
-    const files = await client.readTheme(repo);
+    const files = await ready.client.readTheme(repo);
     if (files.length === 0) {
       return githubResult(request, false, `No theme files found under ${repo.path || 'the repository root'}.`);
     }
@@ -565,8 +612,8 @@ async function cloneThemeFromGitHub(request: Request, env: PluginEnv): Promise<R
 /** Commits the theme's templates back to the repository it was cloned from. */
 async function pushThemeToGitHub(request: Request, env: PluginEnv): Promise<Response> {
   const form = await request.formData();
-  const gate = gitHubReady(env);
-  if (gate) return gate;
+  const ready = await gitHubClient(env);
+  if (ready instanceof Response) return ready;
 
   const theme = await themeFromId(env, formString(form.get('theme')) || null);
   if (!theme) return githubResult(request, false, 'Theme not found.');
@@ -582,8 +629,7 @@ async function pushThemeToGitHub(request: Request, env: PluginEnv): Promise<Resp
   })));
 
   try {
-    const client = new GitHubClient(env.GITHUB_TOKEN as string);
-    const sha = await client.commit(
+    const sha = await ready.client.commit(
       theme.repo,
       files,
       formString(form.get('message')) || `Update theme templates from the CMS theme editor`,
@@ -595,22 +641,51 @@ async function pushThemeToGitHub(request: Request, env: PluginEnv): Promise<Resp
   }
 }
 
-/** GitHub work needs both a token to act with and a bucket to land in. */
-function gitHubReady(env: PluginEnv): Response | null {
-  if (!env.GITHUB_TOKEN) {
-    return Response.json({
-      ok: false,
-      message: 'No GitHub token. Set one with `wrangler secret put GITHUB_TOKEN` '
-        + '(a fine-grained token with Contents: read and write).',
-    }, { status: 503 });
-  }
+/** GitHub work needs either an App installation or a PAT, plus an R2 bucket. */
+async function gitHubClient(env: PluginEnv): Promise<{ client: GitHubClient } | Response> {
   if (!env.THEMES) {
     return Response.json({
       ok: false,
       message: 'No themes bucket is bound, so there is nowhere to put a cloned theme.',
     }, { status: 503 });
   }
-  return null;
+  try {
+    const access = await githubAccess(env);
+    if (!access) {
+      return Response.json({
+        ok: false,
+        message: 'Connect GitHub from the theme dashboard, or set `GITHUB_TOKEN` with '
+          + '`wrangler secret put GITHUB_TOKEN` (Contents: read and write).',
+      }, { status: 503 });
+    }
+    return { client: new GitHubClient(access.token) };
+  } catch (error) {
+    return Response.json({
+      ok: false,
+      message: gitHubMessage(error),
+    }, { status: 503 });
+  }
+}
+
+async function connectGitHubApp(request: Request, env: PluginEnv): Promise<Response> {
+  try {
+    const location = await githubInstallUrl(env, actingUserId(request));
+    return new Response(null, {
+      status: 302,
+      headers: { location, 'cache-control': 'no-store' },
+    });
+  } catch (error) {
+    return githubResult(request, false, gitHubMessage(error));
+  }
+}
+
+async function disconnectGitHub(request: Request, env: PluginEnv): Promise<Response> {
+  await disconnectGitHubApp(env);
+  return githubResult(
+    request,
+    true,
+    'Disconnected GitHub from this CMS. The GitHub App remains installed until you remove it on GitHub.',
+  );
 }
 
 function gitHubMessage(error: unknown): string {
