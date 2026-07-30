@@ -2,8 +2,8 @@
 // @vitest-environment-options { "settings": { "disableCSSFileLoading": true, "disableJavaScriptFileLoading": true } }
 import { readFile } from 'node:fs/promises';
 import { resolve } from 'node:path';
-import { Liquid } from 'liquidjs';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
+import { hostLiquid } from './host-liquid';
 
 /**
  * Drives the approved editor asset against the real `editor.liquid` markup, so
@@ -112,7 +112,7 @@ async function mountEditor(
 ): Promise<{ renders: RenderCall[]; fetchMock: ReturnType<typeof vi.fn> }> {
   const source = await readFile(editorSection, 'utf8');
   document.body.innerHTML = String(
-    await new Liquid({ outputEscape: 'escape' }).parseAndRender(source, viewData(overrides)),
+    await new (hostLiquid().Liquid)({ outputEscape: 'escape' }).parseAndRender(source, viewData(overrides)),
   );
 
   const renders: RenderCall[] = [];
