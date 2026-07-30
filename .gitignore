@@ -2,6 +2,7 @@ node_modules/
 .wrangler/
 .dev.vars
 views/theme/
+test/vendor/
 .dist/
 
 views/assets/theme-preview.js

@@ -8,6 +8,7 @@
     "theme:watch": "node scripts/sync-theme.mjs --watch",
     "theme:apply": "node scripts/apply-theme.mjs",
     "theme:push": "node scripts/sync-theme.mjs --push",
+    "liquid:sync": "node scripts/sync-liquid.mjs",
     "build:preview": "esbuild src/browser/preview.ts --bundle --format=iife --minify --platform=browser --target=es2020 --outfile=views/assets/theme-preview.js",
     "build:assets": "node scripts/build-assets.mjs",
     "build": "npm run build:preview && npm run build:assets",
@@ -24,8 +25,7 @@
     "kv:setup:preview": "cms-plugin-kv-setup --preview"
   },
   "dependencies": {
-    "@lionrockjs/worker-cms-plugin": "0.3.3",
-    "liquidjs": "^10.27.2"
+    "@lionrockjs/worker-cms-plugin": "0.3.3"
   },
   "devDependencies": {
     "@cloudflare/workers-types": "^5.20260726.1",

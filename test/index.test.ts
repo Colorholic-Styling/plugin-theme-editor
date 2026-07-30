@@ -1,8 +1,8 @@
 import { readFile } from 'node:fs/promises';
 import { fileURLToPath } from 'node:url';
-import { Liquid } from 'liquidjs';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { clearTenantCache, type CmsPage } from '@lionrockjs/worker-cms-plugin';
+import { hostLiquid } from './host-liquid';
 import worker from '../src/index';
 import { applyEditorFields, editorFields } from '../src/editor-model';
 import { previewThemeStore, renderThemePreview, themeRuntime } from '../src/theme/renderer';
@@ -204,12 +204,12 @@ function contentMeta() {
 
 async function renderEditorSection(data: Record<string, unknown>): Promise<string> {
   const source = await readFile(fileURLToPath(new URL('../views/sections/editor.liquid', import.meta.url)), 'utf8');
-  return String(await new Liquid({ outputEscape: 'escape' }).parseAndRender(source, data));
+  return String(await new (hostLiquid().Liquid)({ outputEscape: 'escape' }).parseAndRender(source, data));
 }
 
 async function renderThemesSection(data: Record<string, unknown>): Promise<string> {
   const source = await readFile(fileURLToPath(new URL('../views/sections/themes.liquid', import.meta.url)), 'utf8');
-  return String(await new Liquid({ outputEscape: 'escape' }).parseAndRender(source, data));
+  return String(await new (hostLiquid().Liquid)({ outputEscape: 'escape' }).parseAndRender(source, data));
 }
 
 afterEach(() => {

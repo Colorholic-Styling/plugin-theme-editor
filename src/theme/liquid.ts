@@ -1,8 +1,68 @@
-import { Liquid, TypeGuards } from 'liquidjs';
 import type { ThemeStore } from './store';
 
-function engine(store: ThemeStore, globals: Record<string, unknown>): Liquid {
-  const liquid = new Liquid({
+/**
+ * The host CMS already ships LiquidJS: every admin page loads
+ * `/assets/liquid.browser.min.js` — a UMD build that defines `liquidjs` on the
+ * global — for its own client-side view rendering, and an approved plugin asset
+ * is injected after it. The preview reads that global instead of bundling a
+ * second copy, so the theme is parsed by the same engine the admin UI uses and
+ * the approval-gated asset stays small.
+ */
+interface LiquidToken {
+  file?: string;
+  getText(): string;
+}
+
+interface LiquidTagToken extends LiquidToken {
+  name: string;
+}
+
+interface LiquidTag {
+  parse(token: LiquidTagToken, remainTokens: LiquidToken[]): void;
+  render(): string;
+}
+
+interface LiquidFS {
+  readFileSync(file: string): string;
+  readFile(file: string): Promise<string>;
+  existsSync(file: string): boolean;
+  exists(file: string): Promise<boolean>;
+  contains(root: string, file: string): Promise<boolean>;
+  containsSync(root: string, file: string): boolean;
+  resolve(root: string, file: string, ext: string): string;
+}
+
+interface LiquidOptions {
+  cache: boolean;
+  extname: string;
+  globals: Record<string, unknown>;
+  root: string[];
+  relativeReference: boolean;
+  fs: LiquidFS;
+}
+
+interface LiquidEngine {
+  registerTag(name: string, tag: LiquidTag): void;
+  parseAndRender(source: string, data: Record<string, unknown>): Promise<unknown>;
+}
+
+interface LiquidModule {
+  Liquid: new (options: LiquidOptions) => LiquidEngine;
+  TypeGuards: { isTagToken(token: LiquidToken): token is LiquidTagToken };
+}
+
+function liquidjs(): LiquidModule {
+  const module = (globalThis as { liquidjs?: LiquidModule }).liquidjs;
+  if (!module) {
+    throw new Error(
+      'LiquidJS is unavailable: the theme preview runs on an admin page, which loads /assets/liquid.browser.min.js',
+    );
+  }
+  return module;
+}
+
+function engine(store: ThemeStore, globals: Record<string, unknown>): LiquidEngine {
+  const liquid = new (liquidjs().Liquid)({
     cache: true,
     extname: '.liquid',
     globals,
@@ -42,7 +102,8 @@ function engine(store: ThemeStore, globals: Record<string, unknown>): Liquid {
  * tag, so consume its body without rendering it and validate the JSON while
  * the template is parsed.
  */
-function registerSchemaTag(liquid: Liquid): void {
+function registerSchemaTag(liquid: LiquidEngine): void {
+  const { TypeGuards } = liquidjs();
   liquid.registerTag('schema', {
     parse(token, remainTokens) {
       const source: string[] = [];
