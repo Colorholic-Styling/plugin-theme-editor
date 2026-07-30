@@ -12,6 +12,7 @@
   var selectedLabel = root.querySelector('[data-theme-editor-selected-label]');
   var selectedType = root.querySelector('[data-theme-editor-selected-type]');
   var selectedBlockInput = root.querySelector('[data-theme-editor-selected-block]');
+  var selectedSectionInput = root.querySelector('[data-theme-editor-selected-section]');
   var panelViewport = root.querySelector('[data-theme-editor-panel-viewport]');
   var panelTrack = root.querySelector('[data-theme-editor-panel-track]');
   var listPanel = root.querySelector('[data-theme-editor-list-panel]');
@@ -21,8 +22,8 @@
   var saveStatus = root.querySelector('[data-theme-editor-save-status]');
   var preview = root.querySelector('[data-theme-editor-preview]');
   if (!editorAction || !stateSource || !form || !fieldsHost || !selectedLabel || !selectedType
-    || !selectedBlockInput || !panelViewport || !panelTrack || !listPanel || !settingsPanel
-    || !listHeading) return;
+    || !selectedBlockInput || !selectedSectionInput || !panelViewport || !panelTrack
+    || !listPanel || !settingsPanel || !listHeading) return;
 
   var state;
   try {
@@ -41,13 +42,32 @@
   state.themeId = typeof state.themeId === 'string' ? state.themeId : '';
   state.templateId = typeof state.templateId === 'string' ? state.templateId : '';
   state.canEdit = state.canEdit === true;
+  // The template's sections, in the order it renders them. The list is drawn
+  // from these, so composing a panel here has to read the same list.
+  state.sections = Array.isArray(state.sections)
+    ? state.sections.filter(isRecord).map(function (entry) {
+      return {
+        key: stringValue(entry.key),
+        label: stringValue(entry.label),
+        type: stringValue(entry.type),
+        blockIndex: blockFromValue(
+          entry.blockIndex === null || entry.blockIndex === undefined
+            ? ''
+            : String(entry.blockIndex)
+        )
+      };
+    })
+    : [];
 
   var dirty = false;
   var saving = false;
   var previewTimer = 0;
   var bindingTimer = 0;
   var settingsMode = root.getAttribute('data-settings-mode') === 'schema' ? 'schema' : 'values';
-  var inspectorView = blockFromValue(selectedBlockInput.value) === null ? 'list' : 'settings';
+  var inspectorView = blockFromValue(selectedBlockInput.value) === null
+    && !selectedSectionInput.value
+    ? 'list'
+    : 'settings';
 
   setInspectorView(inspectorView, false, false);
   window.addEventListener('resize', syncPanelHeight);
@@ -127,7 +147,13 @@
     // page cannot compose locally, so let the link load it from the server.
     if (settingsMode === 'schema') return;
     event.preventDefault();
-    focusBlock(blockFromValue(link.getAttribute('data-block')), link.href, true, 'settings');
+    focusTarget(
+      blockFromValue(link.getAttribute('data-block')),
+      link.getAttribute('data-section') || '',
+      link.href,
+      true,
+      'settings'
+    );
   });
 
   // Choosing a page, template, or language loads it straight away. The submit
@@ -176,8 +202,14 @@
     var historyView = window.history.state && window.history.state.themeEditorView;
     var view = historyView === 'settings' || historyView === 'list'
       ? historyView
-      : params.has('block') ? 'settings' : 'list';
-    focusBlock(blockFromValue(params.get('block')), window.location.href, false, view);
+      : params.has('block') || params.has('section') ? 'settings' : 'list';
+    focusTarget(
+      blockFromValue(params.get('block')),
+      params.get('section') || '',
+      window.location.href,
+      false,
+      view
+    );
   });
 
   function bindPreview() {
@@ -201,8 +233,9 @@
           // As in the list, schema mode needs the server to compose the panel.
           if (settingsMode === 'schema') return;
           event.preventDefault();
-          focusBlock(
+          focusTarget(
             blockFromValue(wrapper.getAttribute('data-theme-editor-block')),
+            '',
             link.href,
             true,
             'settings'
@@ -212,9 +245,9 @@
 
         if (target.closest('[data-theme-editor-block]')) return;
         if (isInteractiveTarget(target)) return;
-        if (blockFromValue(selectedBlockInput.value) === null) return;
+        if (blockFromValue(selectedBlockInput.value) === null && !selectedSectionInput.value) return;
 
-        focusBlock(null, editorHref(null), true, 'list');
+        focusTarget(null, '', editorHref(null, ''), true, 'list');
       });
       selectBlockInPreview(blockFromValue(selectedBlockInput.value));
     } catch (_error) {
@@ -325,7 +358,8 @@
   function schemaPanelMatchesSelection() {
     var modes = root.querySelector('[data-theme-editor-modes]');
     if (!modes) return false;
-    return modes.getAttribute('data-schema-block') === (selectedBlockInput.value || '');
+    return modes.getAttribute('data-schema-block') === (selectedBlockInput.value || '')
+      && (modes.getAttribute('data-schema-section') || '') === (selectedSectionInput.value || '');
   }
 
   function setSettingsMode(mode, href) {
@@ -535,17 +569,23 @@
     }
   }
 
-  function focusBlock(block, fallbackHref, pushHistory, nextView) {
+  function focusTarget(block, section, fallbackHref, pushHistory, nextView) {
     if (saving) return;
     if (dirty && !window.confirm('Discard unsaved changes in this selection?')) return;
     dirty = false;
     clearSaveStatus();
 
     try {
-      var panel = composePanel(block);
+      var panel = composePanel(block, section);
+      // A section the page has no block for opens on its bindings, which are
+      // rendered from the theme's own {% schema %} — only the server has that.
+      if (panel.missingBlock) {
+        window.location.assign(fallbackHref);
+        return;
+      }
       renderPanel(panel);
-      updateNavigation(panel.selectedBlock);
-      syncSettingsModes(panel.selectedBlock);
+      updateNavigation(panel.selectedBlock, panel.selectedSection);
+      syncSettingsModes(panel.selectedBlock, panel.selectedSection);
       selectBlockInPreview(panel.selectedBlock, true);
       if (fieldsScroll) fieldsScroll.scrollTop = 0;
       setInspectorView(nextView, true, true);
@@ -554,6 +594,7 @@
         window.history.pushState(
           {
             themeEditorBlock: panel.selectedBlock,
+            themeEditorSection: panel.selectedSection,
             themeEditorView: inspectorView
           },
           '',
@@ -565,19 +606,45 @@
     }
   }
 
-  /** Raw page lect + selected block → the inspector view model. */
-  function composePanel(block) {
-    var selectedBlock = validBlockIndex(state.lect, block) ? block : null;
+  /**
+   * Template section + page lect + selected block → the inspector view model.
+   * The section is what the panel describes; the block is what it can edit,
+   * which a page need not have for every section the template declares.
+   */
+  function composePanel(block, section) {
+    var entry = sectionEntry(section, block);
+    var selectedBlock = validBlockIndex(state.lect, block)
+      ? block
+      : entry && validBlockIndex(state.lect, entry.blockIndex) ? entry.blockIndex : null;
     var fields = editorFields(state.lect, state.languages, state.language, selectedBlock);
     return {
       selectedBlock: selectedBlock,
-      selectedLabel: selectedBlock === null ? 'Page settings' : 'Block ' + (selectedBlock + 1),
-      selectedType: selectedBlock === null ? '' : scalar(blockAt(state.lect, selectedBlock)._type),
+      selectedSection: entry ? entry.key : '',
+      selectedLabel: entry
+        ? entry.label
+        : selectedBlock === null ? 'Page settings' : 'Block ' + (selectedBlock + 1),
+      selectedType: entry
+        ? entry.type
+        : selectedBlock === null ? '' : scalar(blockAt(state.lect, selectedBlock)._type),
       fieldGroups: groupFields(fields),
       hasFields: fields.length > 0,
+      // A declared section the page has no block for has nothing to edit.
+      missingBlock: !!entry && selectedBlock === null,
       canEdit: state.canEdit,
-      editorHref: editorHref(selectedBlock)
+      editorHref: editorHref(selectedBlock, entry ? entry.key : '')
     };
+  }
+
+  /** The named section, or the one the template binds to this block. */
+  function sectionEntry(section, block) {
+    var found = null;
+    state.sections.forEach(function (entry) {
+      if (found) return;
+      if (section ? entry.key === section : block !== null && entry.blockIndex === block) {
+        found = entry;
+      }
+    });
+    return found;
   }
 
   function editorFields(lect, languages, language, blockIndex) {
@@ -693,6 +760,7 @@
     selectedType.textContent = stringValue(panel.selectedType);
     selectedType.hidden = !panel.selectedType;
     selectedBlockInput.value = panel.selectedBlock === null ? '' : String(panel.selectedBlock);
+    selectedSectionInput.value = stringValue(panel.selectedSection);
     fieldsHost.replaceChildren();
 
     panel.fieldGroups.forEach(function (group) {
@@ -764,13 +832,13 @@
    * The mode bar belongs to a block, and focusing one here never reloads the
    * page, so it has to be revealed and re-pointed at the block now selected.
    */
-  function syncSettingsModes(block) {
+  function syncSettingsModes(block, section) {
     var modes = root.querySelector('[data-theme-editor-modes]');
     if (!modes) return;
-    modes.hidden = block === null;
-    if (block === null) return;
+    modes.hidden = block === null && !section;
+    if (modes.hidden) return;
 
-    var href = editorHref(block);
+    var href = editorHref(block, section);
     modes.querySelectorAll('[data-theme-editor-mode]').forEach(function (link) {
       link.href = link.getAttribute('data-theme-editor-mode') === 'schema'
         ? href + (href.indexOf('?') === -1 ? '?' : '&') + 'settings=schema'
@@ -778,9 +846,10 @@
     });
   }
 
-  function updateNavigation(block) {
+  function updateNavigation(block, section) {
     root.querySelectorAll('[data-theme-editor-focus]').forEach(function (link) {
-      var active = blockFromValue(link.getAttribute('data-block')) === block;
+      var active = blockFromValue(link.getAttribute('data-block')) === block
+        && (link.getAttribute('data-section') || '') === (section || '');
       link.classList.toggle('bg-indigo-50', active);
       link.classList.toggle('font-semibold', active);
       link.classList.toggle('text-indigo-700', active);
@@ -808,12 +877,14 @@
     }
   }
 
-  function editorHref(block) {
+  function editorHref(block, section) {
     var url = new URL(editorAction, window.location.origin);
     if (state.themeId) url.searchParams.set('theme', state.themeId);
     if (state.templateId) url.searchParams.set('template', state.templateId);
     url.searchParams.set('page_id', String(state.pageId));
     url.searchParams.set('language', state.language);
+    if (section) url.searchParams.set('section', section);
+    else url.searchParams.delete('section');
     if (block !== null) url.searchParams.set('block', String(block));
     else url.searchParams.delete('block');
     return url.pathname + url.search;

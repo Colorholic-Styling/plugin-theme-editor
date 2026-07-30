@@ -1,0 +1,9 @@
+<!doctype html>
+<html lang="{{ lang | escape }}">
+<head>{% render '/snippets/head' %}</head>
+<body>
+  {% render '/snippets/header' %}
+  <main>{% block content %}{% endblock %}</main>
+  {% render '/snippets/footer' %}
+</body>
+</html>

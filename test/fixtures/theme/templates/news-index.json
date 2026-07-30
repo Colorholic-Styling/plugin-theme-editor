@@ -1,0 +1,7 @@
+{
+  "layout": "default",
+  "sections": {
+    "results": { "type": "news-results" }
+  },
+  "order": ["results"]
+}

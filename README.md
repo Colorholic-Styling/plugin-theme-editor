@@ -7,7 +7,7 @@ Visual theme editing for 0xCMS. The first development slice can:
 - discover the theme's JSON/Liquid templates during development sync and
   select which template renders the preview;
 - list CMS pages from admin-approved page types;
-- render the selected page with the Colorholic Liquid theme, in the browser;
+- render the selected page with a bucket-backed Liquid theme, in the browser;
 - select a page block from the preview or settings list without reloading the
   CMS page or preview (the approved browser asset composes the inspector from
   the initial page `lect`, with normal links as fallback);
@@ -29,35 +29,28 @@ Visual theme editing for 0xCMS. The first development slice can:
 
 ```bash
 npm install
-npm run theme:sync
 npm test
 npm run typecheck
 npm run dev
 ```
 
-`npm run dev` runs on port `8798` and keeps the development theme synced from:
-
-```text
-/Users/colin/Documents/code/projects/colorholicstyling/www/views
-```
-
-The sync also watches that directory, so editing the theme while the site runs
-on `http://localhost:8080` updates the preview without restarting either
-Worker. Without the watch the bundle is only a snapshot taken before
-`wrangler dev` started, and later theme edits never reach the editor. Run
-`npm run theme:watch` on its own when the dev server is started some other way.
-
-Override the source without changing code:
+`npm run dev` runs on port `8798` and reads themes from the `THEMES` bucket.
+To work against a checked-out theme instead, configure its source explicitly:
 
 ```bash
-THEME_SOURCE_DIR=/absolute/path/to/views npm run theme:sync
+THEME_SOURCE_DIR=/absolute/path/to/views \
+THEME_ID=example-theme \
+npm run dev:theme
 ```
 
-The sync creates the ignored `views/theme/` runtime bundle and a
+`dev:theme` stages the configured directory under ignored `views/theme/`, copies
+it into `.dist/views/theme/`, and then watches the source into that live
+development fallback. A one-off `npm run theme:sync` uses the same required
+`THEME_SOURCE_DIR`. The sync creates a
 `theme-manifest.json` containing the available templates. It copies in place
 and prunes what the source removed, because `wrangler dev` serves the subtree
-live. The Worker reads both through `ThemeStore`; replacing `AssetThemeStore`
-with an R2-backed store is the intended bucket migration path.
+live. Production deployment never runs this sync and does not require the
+checked-out theme.
 
 For local single-tenant development:
 
@@ -81,8 +74,8 @@ For local single-tenant development:
 CMS admin
   └─ /admin/plugins/theme-editor
        └─ available themes
-            └─ /editor?theme=colorholic-styling
-                 ├─ template manifest ─────────────▶ views/theme/templates
+            └─ /editor?theme=example-theme
+                 ├─ template manifest ─────────────▶ THEMES bucket
                  ├─ page list + content metadata ──▶ /__cms
                  ├─ preview iframe ────────────────▶ empty frame, written by the
                  │                                    editor page's renderer from
@@ -92,12 +85,12 @@ CMS admin
                  └─ AJAX settings save ────────────▶ PATCH /__cms/pages/:id
 ```
 
-The preview adapter is deliberately theme-specific today: `lect` is projected
-into the view models expected by the Colorholic sections. Theme template
-storage is already abstracted separately so R2 can replace the development
-asset bundle without coupling storage to the editor. The initial client view
-contains an HTML-escaped JSON editor state; changing the focused block reads
-that local state and does not call the plugin or CMS.
+The built-in preview adapter projects standard 0xCMS `lect` block types into
+the view models expected by theme sections. Theme identity, source paths,
+templates, partials, and repository metadata all come from the selected theme;
+none is compiled into the editor. The initial client view contains an
+HTML-escaped JSON editor state; changing the focused block reads that local
+state and does not call the plugin or CMS.
 
 The theme decides how a CMS block reaches the page, so selection overlays are
 attached two ways:
@@ -243,14 +236,14 @@ the selection, rather than showing a panel that describes another block.
 ### The theme bucket
 
 `THEMES` is the theme library, and the bucket is its root: every top-level
-folder is a theme, so `colorholic-styling/templates/page.json` is that theme's
+folder is a theme, so `example-theme/templates/page.json` is that theme's
 page template. The registry is the bucket listing rather than anything compiled
 into this Worker, so adding a theme is uploading a folder. Each theme names
 itself in its own `theme-manifest.json`.
 
 ```text
 cms-themes/
-  colorholic-styling/      ← one theme
+  example-theme/      ← one theme
     layout/ sections/ snippets/ templates/ assets/
     theme-manifest.json
   studio-minimal/          ← another
@@ -263,17 +256,19 @@ publish route checks. Everything else — the renderer, the schema reader, the
 bundle endpoint, the browser bundle — is unchanged, because they only ever knew
 `ThemeStore`.
 
-Fill the bucket from a checked-out theme:
+Fill the bucket from a checked-out theme (both variables are explicit so the
+editor has no dependency on a particular local repository):
 
 ```bash
-npm run theme:push              # sync, then upload into the bucket
-THEME_ID=studio-minimal npm run theme:push
+THEME_SOURCE_DIR=/absolute/path/to/views \
+THEME_ID=studio-minimal \
+npm run theme:push
 ```
 
 The upload goes through the plugin rather than the R2 API, so the same command
 fills Miniflare's local R2 under `wrangler dev` and a real bucket in
 production. With no bucket bound, the development theme staged under
-`views/theme/` stands in and everything behaves as before.
+`.dist/views/theme/` stands in.
 
 Publishing folds the override layer into the theme's own files:
 
@@ -358,16 +353,15 @@ in `order`, so showing it again is putting the key back rather than rebuilding
 it. `theme:watch` then picks the file up and the preview re-renders from the
 theme itself.
 
-It needs `npm run dev` running (it reads `PLUGIN_SECRET` from `.dev.vars`);
-`THEME_SOURCE_DIR`, `PLUGIN_URL`, and `THEME_ID` override where it reads and
-writes.
+It needs `npm run dev` running (it reads `PLUGIN_SECRET` from `.dev.vars`) and
+requires `THEME_SOURCE_DIR`; `PLUGIN_URL` and `THEME_ID` choose the target.
 
 ### Section visibility
 
 Hiding a section drops its key from the `order` the preview compiles, leaving
 the theme's own template file untouched. That decision belongs to the template
 rather than to one page's content, so it cannot live in a page's `lect`; and
-`views/theme/` is a read-only asset subtree that `theme:sync` regenerates, so
+`.dist/views/theme/` is a read-only asset subtree that `theme:sync` regenerates, so
 it cannot be written back to the theme either. It is stored in the
 `THEME_OVERRIDES` KV namespace instead, keyed by tenant, theme, and template:
 
@@ -409,7 +403,7 @@ every declared section stays reachable.
    section reordering.
 3. Add draft preview support for related pages, media proxy behavior, template
    diagnostics, and responsive viewport controls.
-4. Version the bucket's theme folders (`colorholic-styling/v3/…`) for rollback,
+4. Version the bucket's theme folders (`example-theme/v3/…`) for rollback,
    and cache the bundle per theme version so a render is not one R2 read per
    partial. The registry and the writable store are in place.
 5. Add drag selection and richer unsaved-change state while preserving the

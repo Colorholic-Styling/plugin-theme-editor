@@ -15,7 +15,10 @@ function views(): Fetcher {
     async fetch(input: RequestInfo | URL): Promise<Response> {
       const url = typeof input === 'string' ? new URL(input) : input instanceof URL ? input : new URL(input.url);
       try {
-        const path = fileURLToPath(new URL(`../views${url.pathname}`, import.meta.url).href);
+        const root = url.pathname.startsWith('/theme/')
+          ? `./fixtures${url.pathname}`
+          : `../views${url.pathname}`;
+        const path = fileURLToPath(new URL(root, import.meta.url).href);
         return new Response(await readFile(path), { headers: { 'content-type': 'text/plain' } });
       } catch {
         return new Response('not found', { status: 404 });
@@ -79,6 +82,7 @@ function env(overrides: Partial<PluginEnv> = {}): PluginEnv {
     VIEWS: views(),
     CMS_URL: 'https://cms.example.com',
     PLUGIN_SECRET: SECRET,
+    THEME_ID: 'example-theme',
     THEME_SITE_TITLE: 'Preview site',
     ...overrides,
   };
@@ -108,26 +112,34 @@ afterEach(() => {
 
 describe('bucket-backed themes', () => {
   it('reads the theme library from the bucket, one folder per theme', async () => {
-    const THEMES = bucket({ ...themeFiles('colorholic-styling'), ...themeFiles('studio-minimal') });
+    const THEMES = bucket({ ...themeFiles('example-theme'), ...themeFiles('studio-minimal') });
     const themes = await availableThemes(env({ THEMES }));
 
-    expect(themes.map((theme) => theme.id)).toEqual(['colorholic-styling', 'studio-minimal']);
+    expect(themes.map((theme) => theme.id)).toEqual(['example-theme', 'studio-minimal']);
     expect(themes.every((theme) => theme.storage === 'bucket')).toBe(true);
     // A theme names itself in its own manifest, so the bucket stays the registry.
     expect(themes.find((theme) => theme.id === 'studio-minimal')?.name).toBe('Studio Minimal');
-    expect(themes.find((theme) => theme.id === 'colorholic-styling')?.name).toBe('Colorholic Styling');
+    expect(themes.find((theme) => theme.id === 'example-theme')?.name).toBe('Example Theme');
   });
 
   it('falls back to the staged development theme with no bucket', async () => {
     const themes = await availableThemes(env());
     expect(themes).toHaveLength(1);
-    expect(themes[0]).toMatchObject({ id: 'colorholic-styling', storage: 'asset' });
+    expect(themes[0]).toMatchObject({ id: 'example-theme', storage: 'asset' });
     // An asset bundle is immutable at runtime, so that theme cannot be written.
     expect(isWritable(themeStore(env(), themes[0]))).toBe(false);
   });
 
+  it('does not invent a development theme in a clean production build', async () => {
+    const VIEWS = {
+      fetch: async () => new Response('not found', { status: 404 }),
+    } as unknown as Fetcher;
+
+    expect(await availableThemes(env({ THEMES: bucket(), VIEWS }))).toEqual([]);
+  });
+
   it('gives a bucket theme a writable store', async () => {
-    const THEMES = bucket(themeFiles('colorholic-styling'));
+    const THEMES = bucket(themeFiles('example-theme'));
     const pluginEnv = env({ THEMES });
     const [theme] = await availableThemes(pluginEnv);
     const store = themeStore(pluginEnv, theme);
@@ -163,9 +175,9 @@ describe('bucket-backed themes', () => {
   });
 
   it('publishes overrides into the bucket and clears them', async () => {
-    const THEMES = bucket(themeFiles('colorholic-styling'));
+    const THEMES = bucket(themeFiles('example-theme'));
     const THEME_OVERRIDES = kv({
-      'sections:https://cms.example.com:colorholic-styling:page': JSON.stringify({
+      'sections:https://cms.example.com:example-theme:page': JSON.stringify({
         hidden: ['cta'],
         settings: { hero: { title: '{{ page.blocks[0].eyebrow }}' } },
       }),
@@ -175,7 +187,7 @@ describe('bucket-backed themes', () => {
       adminRequest('/__plugin/admin/publish', {
         method: 'POST',
         headers: { 'content-type': 'application/x-www-form-urlencoded' },
-        body: new URLSearchParams({ theme: 'colorholic-styling' }),
+        body: new URLSearchParams({ theme: 'example-theme' }),
       }),
       env({ THEMES, THEME_OVERRIDES }),
     );
@@ -187,7 +199,7 @@ describe('bucket-backed themes', () => {
 
     // The Worker wrote the theme's own file — the thing an asset binding makes
     // impossible.
-    const written = JSON.parse(THEMES.store.get('colorholic-styling/templates/page.json') as string);
+    const written = JSON.parse(THEMES.store.get('example-theme/templates/page.json') as string);
     expect(written.order).toEqual(['hero']);
     expect(written.sections.hero.settings.title).toBe('{{ page.blocks[0].eyebrow }}');
     // The hidden section keeps its definition, so showing it again is putting
@@ -196,12 +208,36 @@ describe('bucket-backed themes', () => {
     expect(THEME_OVERRIDES.store.size).toBe(0);
   });
 
+  it('explains a theme with no templates instead of redirecting to itself', async () => {
+    // A theme repository has no manifest — it is a build product — so a clone
+    // that did not generate one leaves a theme with no templates. The editor
+    // used to answer that by redirecting to the URL it was already on.
+    const THEMES = bucket({
+      'website/theme-manifest.json': JSON.stringify({ repo: { owner: 'o', repo: 'website' } }),
+      'website/templates/page.json': PAGE_TEMPLATE,
+    });
+    vi.stubGlobal('fetch', async () => Response.json({
+      page_types: ['home'], languages: ['en'], default_language: 'en',
+    }));
+
+    const response = await plugin.fetch(
+      adminRequest('/__plugin/admin/editor?theme=website'),
+      env({ THEMES }),
+    );
+
+    expect(response.status).toBe(200);
+    expect(response.headers.get('location')).toBeNull();
+    const data = await response.json() as { heading: string; message: string };
+    expect(data.heading).toContain('has no templates');
+    expect(data.message).toContain('templates/');
+  });
+
   it('refuses to publish a theme served from the immutable asset bundle', async () => {
     const response = await plugin.fetch(
       adminRequest('/__plugin/admin/publish', {
         method: 'POST',
         headers: { 'content-type': 'application/x-www-form-urlencoded' },
-        body: new URLSearchParams({ theme: 'colorholic-styling' }),
+        body: new URLSearchParams({ theme: 'example-theme' }),
       }),
       env({ THEME_OVERRIDES: kv() }),
     );

@@ -5,7 +5,7 @@ import { afterEach, describe, expect, it, vi } from 'vitest';
 import { clearTenantCache, type CmsPage } from '@lionrockjs/worker-cms-plugin';
 import worker from '../src/index';
 import { applyEditorFields, editorFields } from '../src/editor-model';
-import { previewThemeStore, renderThemePreview, themeRuntime } from '../src/theme/colorholic';
+import { previewThemeStore, renderThemePreview, themeRuntime } from '../src/theme/renderer';
 import { AssetThemeStore } from '../src/theme/store';
 import { selectThemeTemplate, themeTemplates } from '../src/theme/templates';
 import { availableThemes } from '../src/themes';
@@ -19,7 +19,10 @@ function views(): Fetcher {
     async fetch(input: RequestInfo | URL): Promise<Response> {
       const url = typeof input === 'string' ? new URL(input) : input instanceof URL ? input : new URL(input.url);
       try {
-        const path = fileURLToPath(new URL(`../views${url.pathname}`, import.meta.url).href);
+        const root = url.pathname.startsWith('/theme/')
+          ? `./fixtures${url.pathname}`
+          : `../views${url.pathname}`;
+        const path = fileURLToPath(new URL(root, import.meta.url).href);
         const body = await readFile(path);
         const contentType = url.pathname.endsWith('.json')
           ? 'application/json'
@@ -39,9 +42,9 @@ function env(overrides: Partial<PluginEnv> = {}): PluginEnv {
     VIEWS: views(),
     CMS_URL: 'https://cms.example.com',
     PLUGIN_SECRET: SECRET,
+    THEME_ID: 'example-theme',
     THEME_NAME: 'Development theme',
     THEME_SITE_TITLE: 'Preview site',
-    THEME_LANGUAGES: 'en,zh-hant',
     ...overrides,
   };
 }
@@ -77,7 +80,7 @@ async function renderPreview(
     language: 'en',
     languages: ['en', 'zh-hant'],
     defaultLanguage: 'en',
-    editorHref: `/admin/plugins/theme-editor/editor?theme=colorholic-styling&template=${template.id}&page_id=${fixture.id}&language=en`,
+    editorHref: `/admin/plugins/theme-editor/editor?theme=example-theme&template=${template.id}&page_id=${fixture.id}&language=en`,
     selectedBlock: options.selectedBlock === undefined ? 0 : options.selectedBlock,
   }, template, new Set(options.hidden ?? []), options.settingOverrides ?? {});
 }
@@ -215,7 +218,7 @@ describe('plugin contract', () => {
     expect(bare.status).toBe(200);
     const script = await bare.text();
     expect(script).toContain("JSON.parse(stateSource.value)");
-    expect(script).toContain("function composePanel(block)");
+    expect(script).toContain("function composePanel(block, section)");
     expect(script).toContain("function editorFields(lect, languages, language, blockIndex)");
     expect(script).toContain("if (readOnlyKey(key)) return");
     expect(script).toContain("selectedType:");
@@ -223,7 +226,7 @@ describe('plugin contract', () => {
     expect(script).toContain("preview.contentDocument");
     expect(script).toContain("[data-theme-editor-block]");
     expect(script).toContain("function isInteractiveTarget(target)");
-    expect(script).toContain("focusBlock(null, editorHref(null), true, 'list')");
+    expect(script).toContain("focusTarget(null, '', editorHref(null, ''), true, 'list')");
     expect(script).toContain("function setInspectorView(view, animate, focusTarget)");
     expect(script).toContain("translateX(-50%)");
     expect(script).toContain("data-theme-editor-close");
@@ -326,14 +329,14 @@ describe('theme editor routes', () => {
     expect(data.title).toBe('Themes');
     expect(data.themes).toEqual([
       expect.objectContaining({
-        id: 'colorholic-styling',
+        id: 'example-theme',
         name: 'Development theme',
-        editorHref: '/admin/plugins/theme-editor/editor?theme=colorholic-styling',
+        editorHref: '/admin/plugins/theme-editor/editor?theme=example-theme',
       }),
     ]);
     const html = await renderThemesSection(data as unknown as Record<string, unknown>);
     expect(html).toContain('Development theme');
-    expect(html).toContain('Local views/theme');
+    expect(html).toContain('Local .dist/views/theme');
     expect(html).toContain('Edit theme');
   });
 
@@ -363,7 +366,7 @@ describe('theme editor routes', () => {
     });
 
     const response = await plugin.fetch(
-      adminRequest('/__plugin/admin/editor?theme=colorholic-styling&page_id=12&language=en&block=0'),
+      adminRequest('/__plugin/admin/editor?theme=example-theme&page_id=12&language=en&block=0'),
       env(),
     );
     expect(response.status).toBe(200);
@@ -373,7 +376,7 @@ describe('theme editor routes', () => {
     expect((data.selectedPage as CmsPage).id).toBe(12);
     expect(data.selectedBlock).toBe(0);
     expect(data.selectedType).toBe('hero');
-    expect(data.themeId).toBe('colorholic-styling');
+    expect(data.themeId).toBe('example-theme');
     expect(data.templateId).toBe('page');
     // The theme owns its template inventory, so assert the selection contract
     // rather than a snapshot of whichever templates the theme ships today.
@@ -387,7 +390,7 @@ describe('theme editor routes', () => {
       .filter((template) => template.selected);
     expect(selectedTemplates).toHaveLength(1);
     expect(data.previewHref).toContain('page_id=12');
-    expect(data.previewHref).toContain('theme=colorholic-styling');
+    expect(data.previewHref).toContain('theme=example-theme');
     expect(data.previewHref).toContain('template=page');
     expect(data.previewHref).toContain('block=0');
     const editorState = JSON.parse(String(data.editorStateJson)) as {
@@ -399,7 +402,7 @@ describe('theme editor routes', () => {
       language: string;
     };
     expect(editorState.pageId).toBe(12);
-    expect(editorState.themeId).toBe('colorholic-styling');
+    expect(editorState.themeId).toBe('example-theme');
     expect(editorState.templateId).toBe('page');
     expect(editorState.lect).toEqual(fixture.lect);
     expect(editorState.languages).toEqual(['en', 'zh-hant']);
@@ -425,7 +428,7 @@ describe('theme editor routes', () => {
     expect(html).toContain('data-theme-editor-focus');
     expect(html).toContain('data-theme-editor-state');
     expect(html).toContain('data-editor-action="/admin/plugins/theme-editor/editor"');
-    expect(html).toContain('name="theme" value="colorholic-styling"');
+    expect(html).toContain('name="theme" value="example-theme"');
     expect(html).toContain('name="template"');
     expect(html).toContain('<option value="news-index">News Index</option>');
     expect(html).toContain('<option value="page" selected>Page</option>');
@@ -448,14 +451,14 @@ describe('theme editor routes', () => {
     expect(html).not.toContain('{% schema %}');
     expect(html).toContain('theme-editor-block is-selected');
     expect(html).toContain('data-theme-editor-block="0"');
-    expect(html).toContain('/admin/plugins/theme-editor/editor?theme=colorholic-styling&amp;template=page&amp;page_id=12');
+    expect(html).toContain('/admin/plugins/theme-editor/editor?theme=example-theme&amp;template=page&amp;page_id=12');
     expect(html).toContain('/admin/plugins/theme-editor/theme/assets/site.css');
     expect(html).not.toContain('href="/assets/site.css');
   });
 
   it('serves an empty frame that loads its own data and templates', async () => {
     const response = await plugin.fetch(
-      adminRequest('/__plugin/admin/preview?theme=colorholic-styling&template=page&page_id=12&language=en&block=0'),
+      adminRequest('/__plugin/admin/preview?theme=example-theme&template=page&page_id=12&language=en&block=0'),
       env(),
     );
     expect(response.status).toBe(200);
@@ -503,7 +506,7 @@ describe('theme editor routes', () => {
     });
 
     const response = await plugin.fetch(
-      adminRequest('/__plugin/admin/editor?theme=colorholic-styling&template=page&page_id=12&language=en&block=0&settings=schema'),
+      adminRequest('/__plugin/admin/editor?theme=example-theme&template=page&page_id=12&language=en&block=0&settings=schema'),
       env(),
     );
     const data = await response.json() as Record<string, unknown>;
@@ -575,7 +578,7 @@ describe('theme editor routes', () => {
     });
 
     const response = await plugin.fetch(
-      adminRequest('/__plugin/admin/editor?theme=colorholic-styling&template=page&page_id=12&language=en&block=0'),
+      adminRequest('/__plugin/admin/editor?theme=example-theme&template=page&page_id=12&language=en&block=0'),
       env(),
     );
     const data = await response.json() as Record<string, unknown>;
@@ -615,7 +618,7 @@ describe('theme editor routes', () => {
           accept: 'application/json',
         },
         body: new URLSearchParams({
-          theme: 'colorholic-styling',
+          theme: 'example-theme',
           template: 'page',
           section: 'hero',
           'setting:title': '{{ page.blocks[0].eyebrow }}',
@@ -648,7 +651,7 @@ describe('theme editor routes', () => {
           accept: 'application/json',
         },
         body: new URLSearchParams({
-          theme: 'colorholic-styling',
+          theme: 'example-theme',
           template: 'page',
           section: 'hero',
           'setting:title': '{{ page.blocks[0].title }}',
@@ -681,25 +684,25 @@ describe('theme editor routes', () => {
 
   it('exposes the override layer for the tooling that writes the theme', async () => {
     const overrides = kv({
-      'sections:https://cms.example.com:colorholic-styling:page': JSON.stringify({
+      'sections:https://cms.example.com:example-theme:page': JSON.stringify({
         hidden: ['cta'],
         settings: { hero: { title: '{{ page.blocks[0].eyebrow }}' } },
       }),
       // A template with nothing overridden is left out entirely, so the writer
       // has no reason to touch its file.
-      'sections:https://cms.example.com:colorholic-styling:message': JSON.stringify({
+      'sections:https://cms.example.com:example-theme:message': JSON.stringify({
         hidden: [],
         settings: {},
       }),
     });
 
     const response = await plugin.fetch(
-      adminRequest('/__plugin/admin/overrides?theme=colorholic-styling'),
+      adminRequest('/__plugin/admin/overrides?theme=example-theme'),
       env({ THEME_OVERRIDES: overrides }),
     );
     expect(response.status).toBe(200);
     expect(await response.json()).toEqual({
-      theme: 'colorholic-styling',
+      theme: 'example-theme',
       templates: {
         page: { hidden: ['cta'], settings: { hero: { title: '{{ page.blocks[0].eyebrow }}' } } },
       },
@@ -708,7 +711,7 @@ describe('theme editor routes', () => {
     // Cleared once written into the theme, so the file is the only thing left
     // saying what it says.
     const cleared = await plugin.fetch(
-      adminRequest('/__plugin/admin/overrides/clear?theme=colorholic-styling', {
+      adminRequest('/__plugin/admin/overrides/clear?theme=example-theme', {
         method: 'POST',
         headers: { 'content-type': 'application/x-www-form-urlencoded' },
         body: new URLSearchParams({ template: 'page' }),
@@ -716,12 +719,12 @@ describe('theme editor routes', () => {
       env({ THEME_OVERRIDES: overrides }),
     );
     expect(await cleared.json()).toMatchObject({ ok: true, template: 'page' });
-    expect(overrides.store.has('sections:https://cms.example.com:colorholic-styling:page')).toBe(false);
+    expect(overrides.store.has('sections:https://cms.example.com:example-theme:page')).toBe(false);
   });
 
   it('refuses to clear a template the theme does not have', async () => {
     const response = await plugin.fetch(
-      adminRequest('/__plugin/admin/overrides/clear?theme=colorholic-styling', {
+      adminRequest('/__plugin/admin/overrides/clear?theme=example-theme', {
         method: 'POST',
         headers: { 'content-type': 'application/x-www-form-urlencoded' },
         body: new URLSearchParams({ template: 'not-a-template' }),
@@ -734,7 +737,7 @@ describe('theme editor routes', () => {
   it('denies clearing overrides without write access', async () => {
     const response = await plugin.fetch(
       adminRequest(
-        '/__plugin/admin/overrides/clear?theme=colorholic-styling',
+        '/__plugin/admin/overrides/clear?theme=example-theme',
         {
           method: 'POST',
           headers: { 'content-type': 'application/x-www-form-urlencoded' },
@@ -758,20 +761,22 @@ describe('theme editor routes', () => {
     });
 
     const response = await plugin.fetch(
-      adminRequest('/__plugin/admin/editor?theme=colorholic-styling&template=page&page_id=12&language=en'),
+      adminRequest('/__plugin/admin/editor?theme=example-theme&template=page&page_id=12&language=en'),
       env({
         THEME_OVERRIDES: kv({
-          'sections:https://cms.example.com:colorholic-styling:page': JSON.stringify({ hidden: ['hero'] }),
+          'sections:https://cms.example.com:example-theme:page': JSON.stringify({ hidden: ['hero'] }),
         }),
       }),
     );
     expect(response.status).toBe(200);
     const data = await response.json() as Record<string, unknown>;
 
-    // The hero section binds to `page.blocks[0]`, so its toggle rides on that
-    // block's row rather than duplicating the row as a second list.
-    const blocks = data.blocks as Array<{ index: number; sectionKey: string; sectionHidden: boolean }>;
-    expect(blocks[0]).toMatchObject({ index: 0, sectionKey: 'hero', sectionHidden: true });
+    // The hero section binds to `page.blocks[0]`, so its row carries both that
+    // block's values and the toggle for the section reading them.
+    const sections = data.sections as Array<{
+      key: string; hidden: boolean; hasBlock: boolean; blockIndex: number | null;
+    }>;
+    expect(sections[0]).toMatchObject({ key: 'hero', hidden: true, hasBlock: true, blockIndex: 0 });
     expect(data.visibilityAction).toBe('/admin/plugins/theme-editor/visibility');
 
     const html = await renderEditorSection(data);
@@ -780,6 +785,106 @@ describe('theme editor routes', () => {
     // Hidden sections stay listed, offering the way back.
     expect(html).toContain('>Show<');
     expect(html).toContain('· hidden');
+  });
+
+  it('lists every section the template declares, not only the ones the page has blocks for', async () => {
+    // The fixture page carries a single block, while `page.json` declares nine
+    // sections reading `page.blocks[0]` through `[8]`. The list describes the
+    // template, so the eight the page has no block for are still on it.
+    const fixture = page();
+    mockCms(({ url }) => {
+      if (url.pathname === '/__cms/content-meta') return contentMeta();
+      if (url.pathname === '/__cms/pages') {
+        return { pages: url.searchParams.get('page_type') === 'home' ? [fixture] : [], total: 1 };
+      }
+      throw new Error(`Unexpected call ${url}`);
+    });
+
+    const response = await plugin.fetch(
+      adminRequest('/__plugin/admin/editor?theme=example-theme&template=page&page_id=12&language=en'),
+      env({ THEME_OVERRIDES: kv() }),
+    );
+    const data = await response.json() as Record<string, unknown>;
+    const sections = data.sections as Array<{ key: string; hasBlock: boolean; href: string }>;
+    expect(sections.map((entry) => entry.key)).toEqual([
+      'hero', 'features', 'services', 'steps', 'team', 'faq', 'news', 'contact', 'cta',
+    ]);
+    expect(sections.filter((entry) => entry.hasBlock).map((entry) => entry.key)).toEqual(['hero']);
+    expect(sections[0].href).toContain('section=hero');
+    expect(sections[0].href).toContain('block=0');
+    expect(sections[1].href).toContain('section=features');
+    expect(sections[1].href).not.toContain('block=');
+
+    const html = await renderEditorSection(data);
+    expect(html).toContain('Template sections');
+    expect(html).toContain('data-section="cta"');
+    expect(html).toContain('name="section" value="contact"');
+    expect(html).toContain('· no page block');
+  });
+
+  it('opens a section the page has no block for on Schema, with no Values mode', async () => {
+    const fixture = page();
+    mockCms(({ url }) => {
+      if (url.pathname === '/__cms/content-meta') return contentMeta();
+      if (url.pathname === '/__cms/pages') {
+        return { pages: url.searchParams.get('page_type') === 'home' ? [fixture] : [], total: 1 };
+      }
+      throw new Error(`Unexpected call ${url}`);
+    });
+
+    const response = await plugin.fetch(
+      adminRequest('/__plugin/admin/editor?theme=example-theme&template=page&page_id=12&language=en&section=cta'),
+      env({ THEME_OVERRIDES: kv() }),
+    );
+    const data = await response.json() as Record<string, unknown>;
+    expect(data.selectedSection).toBe('cta');
+    expect(data.selectedBlock).toBeNull();
+    expect(data.selectedLabel).toBe('Cta');
+    expect(data.selectedType).toBe('cta');
+    expect(data.missingBlock).toBe(true);
+    expect(data.pageSelected).toBe(false);
+    // Nothing backs the values panel, so the section opens on its bindings
+    // rather than on an empty form the reader has to switch away from.
+    expect(data.schemaMode).toBe(true);
+    // The bindings live in the template, so they are editable with no block.
+    const settings = data.schemaSettings as Array<{ id: string; binding: string }>;
+    expect(settings.map((setting) => setting.id)).toContain('title');
+    expect(settings.find((setting) => setting.id === 'title')?.binding)
+      .toBe('{{ page.blocks[8].title }}');
+    expect(data.schemaSection).toBe('cta');
+
+    const html = await renderEditorSection(data);
+    expect(html).toContain('name="setting:title" value="{{ page.blocks[8].title }}"');
+    // The Values mode is not offered, and the schema panel is the live one.
+    expect(html).toMatch(/data-theme-editor-mode="values"[^>]*\shidden/);
+    expect(html).toMatch(/data-theme-editor-panel="schema"[^>]*>/);
+    expect(html).not.toMatch(/data-theme-editor-panel="schema"[^>]*\sdisabled/);
+    expect(html).toMatch(/data-theme-editor-panel="values"[^>]*\sdisabled hidden/);
+  });
+
+  it('keeps both modes for a section the page does have a block for', async () => {
+    const fixture = page();
+    mockCms(({ url }) => {
+      if (url.pathname === '/__cms/content-meta') return contentMeta();
+      if (url.pathname === '/__cms/pages') {
+        return { pages: url.searchParams.get('page_type') === 'home' ? [fixture] : [], total: 1 };
+      }
+      throw new Error(`Unexpected call ${url}`);
+    });
+
+    const response = await plugin.fetch(
+      adminRequest('/__plugin/admin/editor?theme=example-theme&template=page&page_id=12&language=en&section=hero'),
+      env({ THEME_OVERRIDES: kv() }),
+    );
+    const data = await response.json() as Record<string, unknown>;
+    expect(data.selectedSection).toBe('hero');
+    expect(data.selectedBlock).toBe(0);
+    expect(data.missingBlock).toBe(false);
+    expect(data.schemaMode).toBe(false);
+
+    const html = await renderEditorSection(data);
+    expect(html).not.toMatch(/data-theme-editor-mode="values"[^>]*\shidden/);
+    expect(html).toContain('name="field:/_blocks/0/title/en"');
   });
 
   it('lists sections bound to no block so they stay toggleable', async () => {
@@ -793,16 +898,21 @@ describe('theme editor routes', () => {
     });
 
     const response = await plugin.fetch(
-      adminRequest('/__plugin/admin/editor?theme=colorholic-styling&template=news-article&page_id=12&language=en'),
+      adminRequest('/__plugin/admin/editor?theme=example-theme&template=news-article&page_id=12&language=en'),
       env({ THEME_OVERRIDES: kv() }),
     );
     const data = await response.json() as Record<string, unknown>;
-    const loose = data.looseSections as Array<{ key: string; hidden: boolean }>;
-    expect(loose.map((entry) => entry.key)).toContain('content');
-    expect(loose.every((entry) => entry.hidden === false)).toBe(true);
+    const sections = data.sections as Array<{ key: string; hidden: boolean; hasBlock: boolean }>;
+    expect(sections.map((entry) => entry.key)).toContain('content');
+    expect(sections.every((entry) => entry.hidden === false)).toBe(true);
+    expect(sections.every((entry) => entry.hasBlock === false)).toBe(true);
+    // A block no section reads keeps a row of its own, so it stays editable.
+    const orphans = data.orphanBlocks as Array<{ index: number }>;
+    expect(orphans.map((block) => block.index)).toEqual([0]);
 
     const html = await renderEditorSection(data);
     expect(html).toContain('Template sections');
+    expect(html).toContain('Page blocks');
     expect(html).toContain('name="section" value="content"');
   });
 
@@ -816,10 +926,10 @@ describe('theme editor routes', () => {
     });
 
     const response = await plugin.fetch(
-      adminRequest('/__plugin/admin/preview/data?theme=colorholic-styling&template=page&page_id=12&language=en&block=0'),
+      adminRequest('/__plugin/admin/preview/data?theme=example-theme&template=page&page_id=12&language=en&block=0'),
       env({
         THEME_OVERRIDES: kv({
-          'sections:https://cms.example.com:colorholic-styling:page': JSON.stringify({ hidden: ['cta'] }),
+          'sections:https://cms.example.com:example-theme:page': JSON.stringify({ hidden: ['cta'] }),
         }),
       }),
     );
@@ -841,7 +951,7 @@ describe('theme editor routes', () => {
 
   it('serves the theme sources the browser renderer resolves by path', async () => {
     const response = await plugin.fetch(
-      adminRequest('/__plugin/admin/preview/bundle?theme=colorholic-styling'),
+      adminRequest('/__plugin/admin/preview/bundle?theme=example-theme'),
       env(),
     );
     expect(response.status).toBe(200);
@@ -874,7 +984,7 @@ describe('theme editor routes', () => {
         method: 'POST',
         headers: { 'content-type': 'application/x-www-form-urlencoded' },
         body: new URLSearchParams({
-          theme: 'colorholic-styling',
+          theme: 'example-theme',
           template: 'page',
           section: 'hero',
           page_id: '12',
@@ -895,7 +1005,7 @@ describe('theme editor routes', () => {
     // any page rendered through it — not just the page that was open. The
     // stored set is what the data route hands the browser renderer.
     const data = await plugin.fetch(
-      adminRequest('/__plugin/admin/preview/data?theme=colorholic-styling&template=page&page_id=12&language=en'),
+      adminRequest('/__plugin/admin/preview/data?theme=example-theme&template=page&page_id=12&language=en'),
       env({ THEME_OVERRIDES: overrides }),
     );
     expect((await data.json() as { hidden: string[] }).hidden).toEqual(['hero']);
@@ -921,7 +1031,7 @@ describe('theme editor routes', () => {
           'x-requested-with': 'XMLHttpRequest',
         },
         body: new URLSearchParams({
-          theme: 'colorholic-styling',
+          theme: 'example-theme',
           template: 'page',
           section,
           hidden,
@@ -957,7 +1067,7 @@ describe('theme editor routes', () => {
           accept: 'application/json',
         },
         body: new URLSearchParams({
-          theme: 'colorholic-styling',
+          theme: 'example-theme',
           template: 'page',
           section: 'hero',
           hidden: '1',
@@ -981,7 +1091,7 @@ describe('theme editor routes', () => {
         method: 'POST',
         headers: { 'content-type': 'application/x-www-form-urlencoded' },
         body: new URLSearchParams({
-          theme: 'colorholic-styling',
+          theme: 'example-theme',
           template: 'page',
           section: 'not-a-section',
           hidden: '1',
@@ -1004,7 +1114,7 @@ describe('theme editor routes', () => {
         method: 'POST',
         headers: { 'content-type': 'application/x-www-form-urlencoded' },
         body: new URLSearchParams({
-          theme: 'colorholic-styling',
+          theme: 'example-theme',
           template: 'page',
           section: 'hero',
           hidden: '1',
@@ -1023,7 +1133,7 @@ describe('theme editor routes', () => {
         {
           method: 'POST',
           headers: { 'content-type': 'application/x-www-form-urlencoded' },
-          body: new URLSearchParams({ theme: 'colorholic-styling', template: 'page', section: 'hero', hidden: '1' }),
+          body: new URLSearchParams({ theme: 'example-theme', template: 'page', section: 'hero', hidden: '1' }),
         },
         { id: '42', role: 'viewer', permissions: ['theme-editor:view'] },
       ),
@@ -1068,7 +1178,7 @@ describe('theme editor routes', () => {
     });
 
     const body = new URLSearchParams({
-      theme: 'colorholic-styling',
+      theme: 'example-theme',
       template: 'page',
       page_id: '12',
       language: 'en',
@@ -1084,7 +1194,7 @@ describe('theme editor routes', () => {
       env(),
     );
     expect(response.status).toBe(302);
-    expect(response.headers.get('location')).toContain('theme=colorholic-styling');
+    expect(response.headers.get('location')).toContain('theme=example-theme');
     expect(response.headers.get('location')).toContain('template=page');
     expect(response.headers.get('location')).toContain('flash=Changes%20saved');
 
@@ -1107,7 +1217,7 @@ describe('theme editor routes', () => {
     });
 
     const body = new URLSearchParams({
-      theme: 'colorholic-styling',
+      theme: 'example-theme',
       template: 'news-index',
       page_id: '12',
       language: 'en',

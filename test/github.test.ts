@@ -149,8 +149,8 @@ afterEach(() => {
 
 describe('GitHub theme source', () => {
   it('reads repo coordinates from a pasted URL', () => {
-    expect(repoFromUrl('https://github.com/Colorholic-Styling/website.git'))
-      .toEqual({ owner: 'Colorholic-Styling', repo: 'website' });
+    expect(repoFromUrl('https://github.com/Example-Org/website.git'))
+      .toEqual({ owner: 'Example-Org', repo: 'website' });
     expect(repoFromUrl('https://github.com/owner/repo')).toEqual({ owner: 'owner', repo: 'repo' });
     expect(repoFromUrl('not a url')).toBeNull();
     expect(parseRepo({ owner: 'o', repo: 'r' })?.branch).toBe('main');
@@ -170,7 +170,7 @@ describe('GitHub theme source', () => {
 
     const response = await plugin.fetch(
       adminRequest('/__plugin/admin/github', {
-        url: 'https://github.com/Colorholic-Styling/website.git',
+        url: 'https://github.com/Example-Org/website.git',
         branch: 'main',
         path: 'views',
         theme_id: 'website',
@@ -181,7 +181,7 @@ describe('GitHub theme source', () => {
     expect(response.status).toBe(200);
     const payload = await response.json() as { ok: boolean; message: string };
     expect(payload.ok).toBe(true);
-    expect(payload.message).toContain('Colorholic-Styling/website@main');
+    expect(payload.message).toContain('Example-Org/website@main');
 
     // Files land under the theme's folder, with the repo directory stripped.
     expect(THEMES.store.get('website/templates/page.json')).toBe(PAGE_JSON);
@@ -193,7 +193,7 @@ describe('GitHub theme source', () => {
     const manifest = JSON.parse(THEMES.store.get('website/theme-manifest.json') as string);
     expect(manifest).toMatchObject({
       name: 'Website',
-      repo: { owner: 'Colorholic-Styling', repo: 'website', branch: 'main', path: 'views' },
+      repo: { owner: 'Example-Org', repo: 'website', branch: 'main', path: 'views' },
     });
     expect(api.calls.some((call) => call.method !== 'GET')).toBe(false);
   });
@@ -201,7 +201,7 @@ describe('GitHub theme source', () => {
   it('commits the theme templates back to the branch it came from', async () => {
     const THEMES = bucket({
       'website/theme-manifest.json': JSON.stringify({
-        repo: { owner: 'Colorholic-Styling', repo: 'website', branch: 'main', path: 'views' },
+        repo: { owner: 'Example-Org', repo: 'website', branch: 'main', path: 'views' },
         templates: [{ id: 'page', label: 'Page', path: '/templates/page.json', format: 'json' }],
         files: ['/templates/page.json'],
       }),
@@ -234,6 +234,44 @@ describe('GitHub theme source', () => {
     expect(tree.tree.map((entry) => entry.path)).toEqual(['views/templates/page.json']);
     expect(api.committed).toMatchObject({ message: 'Update templates', parents: ['head-sha'] });
     expect(api.ref).toBe('commit-abcdef1234');
+  });
+
+  it('tells an invisible private repo apart from a missing branch', async () => {
+    // GitHub answers 404 for a private repository a token cannot see, exactly
+    // as it does for a branch that is not there.
+    const repoVisible = { value: false };
+    vi.stubGlobal('fetch', async (input: RequestInfo | URL) => {
+      const url = new URL(typeof input === 'string' ? input : input instanceof URL ? input.href : input.url);
+      if (url.pathname.includes('/git/ref/heads/')) return new Response('{}', { status: 404 });
+      if (url.pathname === '/user') return Response.json({ login: 'colin' });
+      if (url.pathname === '/repos/o/r') {
+        return repoVisible.value
+          ? Response.json({ default_branch: 'trunk' })
+          : new Response('{}', { status: 404 });
+      }
+      if (url.pathname === '/repos/o/r/branches') {
+        return Response.json([{ name: 'trunk' }, { name: 'develop' }]);
+      }
+      return new Response('{}', { status: 404 });
+    });
+
+    const clone = () => plugin.fetch(
+      adminRequest('/__plugin/admin/github', { owner: 'o', repo: 'r', branch: 'main', path: 'views' }),
+      env({ THEMES: bucket(), GITHUB_TOKEN: TOKEN }),
+    );
+
+    const noAccess = await (await clone()).json() as { message: string };
+    expect(noAccess.message).toContain('cannot see o/r');
+    expect(noAccess.message).toContain('resource owner');
+    expect(noAccess.message).toContain('authenticates as colin');
+
+    // The same status, with the repository visible, is a branch problem — and
+    // says which branches there are instead of leaving it to guesswork.
+    repoVisible.value = true;
+    const wrongBranch = await (await clone()).json() as { message: string };
+    expect(wrongBranch.message).toContain('no branch `main`');
+    expect(wrongBranch.message).toContain('default branch is `trunk`');
+    expect(wrongBranch.message).toContain('trunk, develop');
   });
 
   it('will not push a theme that was never cloned from GitHub', async () => {

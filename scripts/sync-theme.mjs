@@ -4,14 +4,19 @@ import { basename, join, relative, resolve, sep } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
 const projectRoot = resolve(fileURLToPath(new URL('..', import.meta.url)));
-const defaultSource = '/Users/colin/Documents/code/projects/colorholicstyling/www/views';
-const source = resolve(process.env.THEME_SOURCE_DIR || defaultSource);
-const destination = resolve(projectRoot, 'views/theme');
+const configuredSource = process.env.THEME_SOURCE_DIR?.trim();
+if (!configuredSource) {
+  throw new Error('THEME_SOURCE_DIR is required. Point it at the theme views directory to sync.');
+}
+const source = resolve(configuredSource);
 const manifestFile = 'theme-manifest.json';
 const watchMode = process.argv.includes('--watch');
 const pushMode = process.argv.includes('--push');
+// One-off syncs create the ignored source-stage directory. Watch mode writes
+// into the built asset tree Wrangler is serving so every edit reloads live.
+const destination = resolve(projectRoot, watchMode ? '.dist/views/theme' : 'views/theme');
 const pluginUrl = (process.env.PLUGIN_URL || 'http://localhost:8798').replace(/\/+$/, '');
-const themeId = process.env.THEME_ID || 'colorholic-styling';
+const themeId = process.env.THEME_ID || 'development';
 
 /**
  * Copy in place and prune what the source dropped. Deleting the destination

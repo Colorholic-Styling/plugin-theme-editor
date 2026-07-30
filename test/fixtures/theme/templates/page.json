@@ -1,0 +1,31 @@
+{
+  "layout": "default",
+  "sections": {
+    "hero": {
+      "type": "hero",
+      "settings": {
+        "theme": "{{ page.blocks[0].theme }}",
+        "anchor": "{{ page.blocks[0].anchor }}",
+        "align": "{{ page.blocks[0].align }}",
+        "eyebrow": "{{ page.blocks[0].eyebrow }}",
+        "title": "{{ page.blocks[0].title }}",
+        "bodyHtml": "{{ page.blocks[0].bodyHtml }}",
+        "primary_label": "{{ page.blocks[0].primary.label }}",
+        "primary_url": "{{ page.blocks[0].primary.href }}",
+        "secondary_label": "{{ page.blocks[0].secondary.label }}",
+        "secondary_url": "{{ page.blocks[0].secondary.href }}",
+        "picture": "{{ page.blocks[0].picture }}",
+        "pictureAlt": "{{ page.blocks[0].pictureAlt }}"
+      }
+    },
+    "features": { "type": "features", "settings": { "title": "{{ page.blocks[1].title }}" } },
+    "services": { "type": "services", "settings": { "title": "{{ page.blocks[2].title }}" } },
+    "steps": { "type": "steps", "settings": { "title": "{{ page.blocks[3].title }}" } },
+    "team": { "type": "team", "settings": { "title": "{{ page.blocks[4].title }}" } },
+    "faq": { "type": "faq", "settings": { "title": "{{ page.blocks[5].title }}" } },
+    "news": { "type": "news-list", "settings": { "title": "{{ page.blocks[6].title }}" } },
+    "contact": { "type": "contact", "settings": { "title": "{{ page.blocks[7].title }}" } },
+    "cta": { "type": "cta", "settings": { "title": "{{ page.blocks[8].title }}" } }
+  },
+  "order": ["hero", "features", "services", "steps", "team", "faq", "news", "contact", "cta"]
+}

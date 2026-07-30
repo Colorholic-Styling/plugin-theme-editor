@@ -1,0 +1,47 @@
+{% schema %}
+{
+  "name": "Hero",
+  "settings": [
+    {
+      "type": "select",
+      "id": "theme",
+      "label": "Theme",
+      "options": [
+        { "value": "light", "label": "Light" },
+        { "value": "cream", "label": "Cream" },
+        { "value": "dark", "label": "Dark" },
+        { "value": "accent", "label": "Accent" }
+      ],
+      "default": "light"
+    },
+    { "type": "text", "id": "anchor", "label": "Anchor" },
+    {
+      "type": "select",
+      "id": "align",
+      "label": "Text alignment",
+      "options": [
+        { "value": "left", "label": "Left" },
+        { "value": "center", "label": "Center" }
+      ],
+      "default": "left"
+    },
+    { "type": "text", "id": "eyebrow", "label": "Eyebrow" },
+    { "type": "text", "id": "title", "label": "Title" },
+    { "type": "richtext", "id": "bodyHtml", "label": "Body" },
+    { "type": "text", "id": "primary_label", "label": "Primary button label" },
+    { "type": "url", "id": "primary_url", "label": "Primary button link" },
+    { "type": "text", "id": "secondary_label", "label": "Secondary button label" },
+    { "type": "url", "id": "secondary_url", "label": "Secondary button link" },
+    { "type": "image_picker", "id": "picture", "label": "Picture" },
+    { "type": "text", "id": "pictureAlt", "label": "Picture alt text" }
+  ]
+}
+{% endschema %}
+<section class="hero hero--{{ section.settings.theme | escape }}">
+  {% if section.settings.eyebrow != blank %}<p>{{ section.settings.eyebrow | escape }}</p>{% endif %}
+  <h1>{{ section.settings.title | escape }}</h1>
+  {% if section.settings.bodyHtml != blank %}<div>{{ section.settings.bodyHtml }}</div>{% endif %}
+  {% if section.settings.primary_label != blank and section.settings.primary_url != blank %}
+  <a class="button button--primary" href="{{ section.settings.primary_url | escape }}">{{ section.settings.primary_label | escape }}</a>
+  {% endif %}
+</section>

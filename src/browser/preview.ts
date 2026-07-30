@@ -1,5 +1,5 @@
 import { applyEditorFields } from '../editor-model';
-import { renderThemePreview, resolveThemeBinding, type ThemeRuntime } from '../theme/colorholic';
+import { renderThemePreview, resolveThemeBinding, type ThemeRuntime } from '../theme/renderer';
 import type { ThemeStore } from '../theme/store';
 import type { ThemeTemplate } from '../theme/templates';
 import type { ThemeRenderContext } from '../types';

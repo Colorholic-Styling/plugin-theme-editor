@@ -14,7 +14,6 @@ export interface ThemeDefinition {
   description: string;
   source: string;
   status: string;
-  renderer: 'colorholic';
   /** Path prefix inside the asset bundle; unused by bucket-backed themes. */
   assetPrefix: string;
   /** Where the theme's files live, and whether the Worker may write them. */
@@ -26,14 +25,15 @@ export interface ThemeDefinition {
 /**
  * The bucket is the root of the theme library: every top-level folder is a
  * theme, so publishing one is uploading a folder rather than changing this
- * Worker. Without a bucket the development theme staged under `views/theme/`
+ * Worker. Without a bucket the development theme staged under the built asset
+ * tree at `.dist/views/theme/`
  * stands in, which is what `npm run dev` uses.
  */
 export async function availableThemes(env: PluginEnv): Promise<ThemeDefinition[]> {
-  if (!env.THEMES) return [developmentTheme(env)];
+  if (!env.THEMES) return availableDevelopmentTheme(env);
 
   const ids = await bucketThemeIds(env.THEMES);
-  if (ids.length === 0) return [developmentTheme(env)];
+  if (ids.length === 0) return availableDevelopmentTheme(env);
 
   const themes = await Promise.all(ids.map(async (id) => {
     const meta = await themeMetadata(new R2ThemeStore(env.THEMES as R2Bucket, id));
@@ -45,13 +45,18 @@ export async function availableThemes(env: PluginEnv): Promise<ThemeDefinition[]
         ? `${meta.repo.owner}/${meta.repo.repo}@${meta.repo.branch}`
         : `Bucket ${id}/`,
       status: meta.repo ? 'GitHub' : 'Bucket',
-      renderer: 'colorholic' as const,
       assetPrefix: '',
       storage: 'bucket' as const,
       repo: meta.repo,
     };
   }));
   return themes;
+}
+
+/** A clean production build contains no local theme, even when its bucket is empty. */
+async function availableDevelopmentTheme(env: PluginEnv): Promise<ThemeDefinition[]> {
+  const theme = developmentTheme(env);
+  return await themeStore(env, theme).exists('/theme-manifest.json') ? [theme] : [];
 }
 
 export async function themeFromId(
@@ -79,12 +84,11 @@ export function themeEditorHref(theme: ThemeDefinition, templateId = ''): string
 
 function developmentTheme(env: PluginEnv): ThemeDefinition {
   return {
-    id: 'colorholic-styling',
-    name: env.THEME_NAME || 'Colorholic Styling',
-    description: 'The development theme synced from the Colorholic Styling Liquid views.',
-    source: 'Local views/theme',
+    id: env.THEME_ID || 'development',
+    name: env.THEME_NAME || 'Development Theme',
+    description: 'The local development theme staged under .dist/views/theme.',
+    source: 'Local .dist/views/theme',
     status: 'Development',
-    renderer: 'colorholic',
     assetPrefix: '/theme',
     storage: 'asset',
     repo: null,

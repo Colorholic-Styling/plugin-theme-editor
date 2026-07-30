@@ -7,6 +7,7 @@ import { renderThemeSource } from './liquid';
 import { AssetThemeStore, VirtualThemeStore, type ThemeStore } from './store';
 import { referencedBlockIndex, type ThemeTemplate } from './templates';
 
+/** Standard 0xCMS block types supported by the built-in preview adapter. */
 const BLOCK_TYPES = [
   'hero', 'rich-text', 'media-text', 'features', 'services', 'steps', 'gallery',
   'testimonials', 'faq', 'stats', 'team', 'logos', 'contact', 'cta', 'news-list',

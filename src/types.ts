@@ -10,9 +10,9 @@ export interface PluginEnv extends CmsClientEnv {
   GITHUB_TOKEN?: string;
   VIEWS: Fetcher;
   CF_VERSION_METADATA?: WorkerVersionMetadata;
+  THEME_ID?: string;
   THEME_NAME?: string;
   THEME_SITE_TITLE?: string;
-  THEME_LANGUAGES?: string;
   THEME_BOOKING_URL?: string;
 }
 
@@ -33,4 +33,3 @@ export interface ThemeRenderContext {
   editorHref: string;
   selectedBlock: number | null;
 }
-

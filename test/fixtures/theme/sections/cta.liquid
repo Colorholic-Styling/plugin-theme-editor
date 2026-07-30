@@ -1,0 +1,9 @@
+{% schema %}
+{
+  "name": "Call to action",
+  "settings": [
+    { "type": "text", "id": "title", "label": "Title" }
+  ]
+}
+{% endschema %}
+<section class="cta"><h2>{{ section.settings.title | escape }}</h2></section>

@@ -14,10 +14,13 @@ import { join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
 const projectRoot = resolve(fileURLToPath(new URL('..', import.meta.url)));
-const defaultSource = '/Users/colin/Documents/code/projects/colorholicstyling/www/views';
-const source = resolve(process.env.THEME_SOURCE_DIR || defaultSource);
+const configuredSource = process.env.THEME_SOURCE_DIR?.trim();
+if (!configuredSource) {
+  throw new Error('THEME_SOURCE_DIR is required. Point it at the theme views directory to update.');
+}
+const source = resolve(configuredSource);
 const pluginUrl = (process.env.PLUGIN_URL || 'http://localhost:8798').replace(/\/+$/, '');
-const themeId = process.env.THEME_ID || 'colorholic-styling';
+const themeId = process.env.THEME_ID || 'development';
 const dryRun = process.argv.includes('--dry-run');
 
 /** The dev secret the plugin authenticates with, as `wrangler dev` reads it. */

@@ -15,9 +15,9 @@ const editorSection = resolve(process.cwd(), 'views/sections/editor.liquid');
 
 function viewData(overrides: Record<string, unknown> = {}) {
   return {
-    title: 'Colorholic Styling',
+    title: 'Example Theme',
     description: 'Preview a CMS page.',
-    themeId: 'colorholic-styling',
+    themeId: 'example-theme',
     templateId: 'page',
     templates: [{ id: 'page', label: 'Page', selected: true }],
     dashboardHref: '/admin/plugins/theme-editor',
@@ -28,20 +28,28 @@ function viewData(overrides: Record<string, unknown> = {}) {
     looseSections: [],
     hasLooseSections: false,
     selectedPage: { id: 12, name: 'Home' },
-    pageHref: '/admin/plugins/theme-editor/editor?theme=colorholic-styling',
+    pageHref: '/admin/plugins/theme-editor/editor?theme=example-theme',
     language: 'en',
     languages: [{ code: 'en', selected: true }],
-    blocks: [
+    // Matches what the editor route emits: one row per template section, in
+    // the order the template renders them.
+    sections: [
       {
-        index: 0,
+        key: 'hero',
         type: 'hero',
-        label: 'Hello',
-        selected: false,
-        href: '/admin/plugins/theme-editor/editor?block=0',
-        sectionKey: 'hero',
-        sectionHidden: false,
+        label: 'Hero',
+        blockIndex: 0,
+        blockNumber: 1,
+        blockTitle: 'Hello',
+        hasBlock: true,
+        hidden: false,
+        selected: true,
+        href: '/admin/plugins/theme-editor/editor?section=hero&block=0',
       },
     ],
+    hasSections: true,
+    orphanBlocks: [],
+    hasOrphanBlocks: false,
     pageSelected: true,
     pageSettingsHref: '/admin/plugins/theme-editor/editor',
     selectedBlock: 0,
@@ -51,8 +59,8 @@ function viewData(overrides: Record<string, unknown> = {}) {
     schemaName: 'Hero',
     schemaBlock: '0',
     hasSchema: true,
-    valuesModeHref: '/admin/plugins/theme-editor/editor?theme=colorholic-styling&block=0',
-    schemaModeHref: '/admin/plugins/theme-editor/editor?theme=colorholic-styling&block=0&settings=schema',
+    valuesModeHref: '/admin/plugins/theme-editor/editor?theme=example-theme&block=0',
+    schemaModeHref: '/admin/plugins/theme-editor/editor?theme=example-theme&block=0&settings=schema',
     schemaSettings: [{
       id: 'theme', label: 'Theme', type: 'select',
       binding: '{{ page.blocks[0].theme }}',
@@ -77,7 +85,7 @@ function viewData(overrides: Record<string, unknown> = {}) {
     hasFields: true,
     loadAction: '/admin/plugins/theme-editor/editor',
     editorStateJson: JSON.stringify({
-      themeId: 'colorholic-styling',
+      themeId: 'example-theme',
       templateId: 'page',
       pageId: 12,
       lect: { _type: 'home', _blocks: [{ _id: 'h', _type: 'hero', _weight: 10 }] },
@@ -88,9 +96,9 @@ function viewData(overrides: Record<string, unknown> = {}) {
     saveAction: '/admin/plugins/theme-editor/save',
     assetHref: '/admin/plugins/theme-editor/assets/theme-editor.js',
     previewAssetHref: '/admin/plugins/theme-editor/assets/theme-preview.js',
-    previewDataHref: '/admin/plugins/theme-editor/preview/data?theme=colorholic-styling',
-    previewBundleHref: '/admin/plugins/theme-editor/preview/bundle?theme=colorholic-styling',
-    previewHref: '/admin/plugins/theme-editor/preview?theme=colorholic-styling',
+    previewDataHref: '/admin/plugins/theme-editor/preview/data?theme=example-theme',
+    previewBundleHref: '/admin/plugins/theme-editor/preview/bundle?theme=example-theme',
+    previewHref: '/admin/plugins/theme-editor/preview?theme=example-theme',
     flash: '',
     nativeEditHref: '',
     ...overrides,
@@ -221,6 +229,101 @@ describe('editor page visibility toggle', () => {
     valuesLink.dispatchEvent(back);
     expect(back.defaultPrevented).toBe(true);
     expect(panels().values).toEqual({ hidden: false, disabled: false });
+  });
+
+  it('hands a section the page has no block for to the server, which opens it on Schema', async () => {
+    // `cta` is the ninth section this template declares, and the page carries
+    // one block, so nothing in the page backs it. There are no values to
+    // compose here, and the bindings panel is rendered from the theme's own
+    // {% schema %}, which only the server can read.
+    const assign = vi.fn();
+    vi.spyOn(window.location, 'assign').mockImplementation(assign);
+    await mountEditor({
+      selectedBlock: '',
+      selectedSection: '',
+      selectedLabel: 'Page settings',
+      pageSelected: true,
+      schemaBlock: '',
+      schemaSection: '',
+      sections: [
+        {
+          key: 'hero', type: 'hero', label: 'Hero', blockIndex: 0, blockNumber: 1,
+          blockTitle: 'Hello', hasBlock: true, hidden: false, selected: false,
+          href: '/admin/plugins/theme-editor/editor?section=hero&block=0',
+        },
+        {
+          key: 'cta', type: 'cta', label: 'Cta', blockIndex: null, blockNumber: 0,
+          blockTitle: '', hasBlock: false, hidden: false, selected: false,
+          href: '/admin/plugins/theme-editor/editor?section=cta',
+        },
+      ],
+      editorStateJson: JSON.stringify({
+        themeId: 'example-theme',
+        templateId: 'page',
+        pageId: 12,
+        lect: { _type: 'home', _blocks: [{ _id: 'h', _type: 'hero', _weight: 10 }] },
+        languages: ['en'],
+        language: 'en',
+        canEdit: true,
+        sections: [
+          { key: 'hero', label: 'Hero', type: 'hero', blockIndex: 0 },
+          { key: 'cta', label: 'Cta', type: 'cta', blockIndex: null },
+        ],
+      }),
+    });
+
+    const label = document.querySelector('[data-theme-editor-selected-label]') as HTMLElement;
+    const section = document.querySelector('[data-theme-editor-selected-section]') as HTMLInputElement;
+
+    const link = document.querySelector('[data-theme-editor-focus][data-section="cta"]') as HTMLAnchorElement;
+    link.dispatchEvent(new Event('click', { bubbles: true, cancelable: true }));
+    for (let attempt = 0; attempt < 100 && assign.mock.calls.length === 0; attempt += 1) {
+      await new Promise((resolve) => setTimeout(resolve, 5));
+    }
+
+    expect(assign).toHaveBeenCalledTimes(1);
+    expect(String(assign.mock.calls[0]?.[0])).toContain('section=cta');
+    // Nothing was composed locally, so the panel still describes what it was
+    // rendered for rather than half-describing the section being loaded.
+    expect(label.textContent).toBe('Page settings');
+    expect(section.value).toBe('');
+  });
+
+  it('selects a section the page does have a block for without leaving the page', async () => {
+    const assign = vi.fn();
+    vi.spyOn(window.location, 'assign').mockImplementation(assign);
+    await mountEditor({
+      selectedBlock: '',
+      selectedSection: '',
+      pageSelected: true,
+      schemaBlock: '',
+      schemaSection: '',
+      editorStateJson: JSON.stringify({
+        themeId: 'example-theme',
+        templateId: 'page',
+        pageId: 12,
+        lect: { _type: 'home', _blocks: [{ _id: 'h', _type: 'hero', _weight: 10 }] },
+        languages: ['en'],
+        language: 'en',
+        canEdit: true,
+        sections: [{ key: 'hero', label: 'Hero', type: 'hero', blockIndex: 0 }],
+      }),
+    });
+
+    const link = document.querySelector('[data-theme-editor-focus][data-section="hero"]') as HTMLAnchorElement;
+    const label = document.querySelector('[data-theme-editor-selected-label]') as HTMLElement;
+    link.dispatchEvent(new Event('click', { bubbles: true, cancelable: true }));
+    for (let attempt = 0; attempt < 100 && label.textContent !== 'Hero'; attempt += 1) {
+      await new Promise((resolve) => setTimeout(resolve, 5));
+    }
+
+    // A block backs this one, so it composes here — no load.
+    expect(assign).not.toHaveBeenCalled();
+    expect(label.textContent).toBe('Hero');
+    expect((document.querySelector('[data-theme-editor-selected-section]') as HTMLInputElement).value)
+      .toBe('hero');
+    expect((document.querySelector('[data-theme-editor-selected-block]') as HTMLInputElement).value)
+      .toBe('0');
   });
 
   it('loads the block from the server when the schema panel is for another one', async () => {

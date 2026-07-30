@@ -3,11 +3,10 @@ main = "src/index.ts"
 compatibility_date = "2026-07-14"
 compatibility_flags = ["nodejs_compat", "global_fetch_strictly_public"]
 
-# Plugin admin views live directly under views/. `npm run theme:sync` also
-# stages the configured development theme under views/theme/. The runtime only
-# knows the Fetcher contract; an R2-backed implementation can replace it later.
+# Plugin admin views live directly under views/. Production themes live in the
+# THEMES bucket and are not generated as part of deployment.
 [assets]
-directory = "./views"
+directory = "./.dist/views"
 binding = "VIEWS"
 run_worker_first = true
 
@@ -16,14 +15,9 @@ binding = "CF_VERSION_METADATA"
 
 [vars]
 CMS_URL = "http://localhost:8787"
-THEME_NAME = "Colorholic Styling"
-THEME_SITE_TITLE = "Colorholic Styling"
-THEME_LANGUAGES = "zh-hant,en"
-THEME_BOOKING_URL = "https://www.fresha.com/zh-HK/a/colorholic-stylingxi-se-sheng-zhuang-xue-yuan-kowloon-flat-e-21-f-po-shau-centre-115-how-ming-street-yiqcq1bx"
 
-# Section visibility is a per-template decision, and the theme bundle under
-# views/theme/ is a read-only asset subtree that `npm run theme:sync`
-# regenerates, so those overrides need their own writable store. Local
+# Section visibility is a per-template decision, so those overrides need their
+# own writable store. Local
 # `wrangler dev` runs against Miniflare's on-disk KV and ignores this id;
 # provision a real namespace before deploying with:
 #   npm run kv:setup -- --binding=THEME_OVERRIDES
@@ -32,10 +26,10 @@ binding = "THEME_OVERRIDES"
 id = "REPLACE_WITH_THEME_EDITOR_OVERRIDES_KV_ID"
 
 # The theme library. The bucket is the root: every top-level folder is a theme,
-# so `colorholic-styling/templates/page.json` is that theme's page template.
+# so `example-theme/templates/page.json` is that theme's page template.
 # Unlike the asset bundle this Worker can write it, which is what lets a
-# deployed editor publish. `wrangler dev` simulates it locally, so
-# `npm run theme:sync -- --push` fills it in development too.
+# deployed editor publish. `wrangler dev` simulates it locally, and
+# `npm run theme:push` can fill it.
 [[r2_buckets]]
 binding = "THEMES"
 bucket_name = "cms-themes"
@@ -48,4 +42,3 @@ bucket_name = "cms-themes"
 # [[kv_namespaces]]
 # binding = "TENANTS"
 # id = "REPLACE_WITH_THEME_EDITOR_TENANTS_KV_ID"
-

@@ -10,7 +10,7 @@ import { beforeEach, describe, expect, it, vi } from 'vitest';
  * something only the Worker has, would still pass a source-level test.
  */
 const bundlePath = resolve(process.cwd(), 'views/assets/theme-preview.js');
-const themePath = resolve(process.cwd(), 'views/theme');
+const themePath = resolve(process.cwd(), 'test/fixtures/theme');
 
 async function themeBundle(): Promise<Record<string, string>> {
   const manifest = JSON.parse(
@@ -21,8 +21,8 @@ async function themeBundle(): Promise<Record<string, string>> {
   return Object.fromEntries(entries);
 }
 
-const DATA_HREF = '/admin/plugins/theme-editor/preview/data?theme=colorholic-styling&template=page&page_id=12';
-const BUNDLE_HREF = '/admin/plugins/theme-editor/preview/bundle?theme=colorholic-styling';
+const DATA_HREF = '/admin/plugins/theme-editor/preview/data?theme=example-theme&template=page&page_id=12';
+const BUNDLE_HREF = '/admin/plugins/theme-editor/preview/bundle?theme=example-theme';
 
 function previewData(overrides: Record<string, unknown> = {}) {
   return {
@@ -54,7 +54,7 @@ function previewData(overrides: Record<string, unknown> = {}) {
       language: 'en',
       languages: ['en', 'zh-hant'],
       defaultLanguage: 'en',
-      editorHref: '/admin/plugins/theme-editor/editor?theme=colorholic-styling&template=page&page_id=12',
+      editorHref: '/admin/plugins/theme-editor/editor?theme=example-theme&template=page&page_id=12',
       selectedBlock: 0,
     },
     template: { id: 'page', label: 'Page', path: '/templates/page.json', format: 'json' },

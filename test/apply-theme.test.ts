@@ -49,7 +49,7 @@ async function pluginServer(overrides: unknown): Promise<{ url: string; cleared:
       return;
     }
     response.writeHead(200, { 'content-type': 'application/json' });
-    response.end(JSON.stringify({ theme: 'colorholic-styling', templates: overrides }));
+    response.end(JSON.stringify({ theme: 'example-theme', templates: overrides }));
   });
   await new Promise<void>((done) => server.listen(0, '127.0.0.1', done));
   const port = (server.address() as { port: number }).port;

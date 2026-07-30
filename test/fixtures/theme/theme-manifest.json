@@ -1,0 +1,32 @@
+{
+  "name": "Example Theme",
+  "description": "Minimal fixture for the theme editor test suite.",
+  "templates": [
+    { "id": "content-page", "label": "Content Page", "path": "/templates/content-page.json", "format": "json" },
+    { "id": "message", "label": "Message", "path": "/templates/message.json", "format": "json" },
+    { "id": "news-article", "label": "News Article", "path": "/templates/news-article.json", "format": "json" },
+    { "id": "news-index", "label": "News Index", "path": "/templates/news-index.json", "format": "json" },
+    { "id": "page", "label": "Page", "path": "/templates/page.json", "format": "json" }
+  ],
+  "files": [
+    "/layout/default.liquid",
+    "/sections/contact.liquid",
+    "/sections/cta.liquid",
+    "/sections/faq.liquid",
+    "/sections/features.liquid",
+    "/sections/hero.liquid",
+    "/sections/news-list.liquid",
+    "/sections/news-results.liquid",
+    "/sections/services.liquid",
+    "/sections/steps.liquid",
+    "/sections/team.liquid",
+    "/snippets/footer.liquid",
+    "/snippets/head.liquid",
+    "/snippets/header.liquid",
+    "/templates/content-page.json",
+    "/templates/message.json",
+    "/templates/news-article.json",
+    "/templates/news-index.json",
+    "/templates/page.json"
+  ]
+}

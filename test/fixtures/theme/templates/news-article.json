@@ -1,0 +1,7 @@
+{
+  "layout": "default",
+  "sections": {
+    "content": { "source": "blocks" }
+  },
+  "order": ["content"]
+}

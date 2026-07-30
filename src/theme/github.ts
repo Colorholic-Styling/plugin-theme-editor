@@ -57,11 +57,57 @@ export class GitHubClient {
   async headCommit(repo: GitHubRepo): Promise<{ sha: string; treeSha: string }> {
     const ref = await this.call<{ object: { sha: string } }>(
       `/repos/${repo.owner}/${repo.repo}/git/ref/heads/${encodeURIComponent(repo.branch)}`,
-    );
+    ).catch(async (error: unknown) => {
+      // A private repository a token cannot see answers 404, the same as a
+      // branch that does not exist, so the raw status cannot tell them apart.
+      if (error instanceof GitHubError && error.status === 404) {
+        throw new GitHubError(await this.explain404(repo), 404);
+      }
+      throw error;
+    });
     const commit = await this.call<{ tree: { sha: string } }>(
       `/repos/${repo.owner}/${repo.repo}/git/commits/${ref.object.sha}`,
     );
     return { sha: ref.object.sha, treeSha: commit.tree.sha };
+  }
+
+  /**
+   * Turns a 404 into the thing to go and fix. Asking whether the repository
+   * itself is visible separates "the token cannot see it" from "that branch is
+   * not there", which the status alone never distinguishes.
+   */
+  private async explain404(repo: GitHubRepo): Promise<string> {
+    const target = `${repo.owner}/${repo.repo}`;
+    let visible: { default_branch?: string };
+    try {
+      visible = await this.call<{ default_branch?: string }>(`/repos/${repo.owner}/${repo.repo}`);
+    } catch {
+      const identity = await this.identity();
+      return `The token cannot see ${target}. GitHub answers 404 rather than 403 for a private `
+        + `repository a token has no access to, so this is access, not a missing branch. `
+        + `${identity}Check that the token's resource owner is ${repo.owner} (not a personal `
+        + `account), that ${target} is among its selected repositories, and — if ${repo.owner} `
+        + `is an organisation — that an owner has approved the token. A classic token needs the `
+        + `full \`repo\` scope for private repositories; \`public_repo\` is not enough.`;
+    }
+
+    const branches = await this.call<Array<{ name: string }>>(
+      `/repos/${repo.owner}/${repo.repo}/branches?per_page=100`,
+    ).catch(() => [] as Array<{ name: string }>);
+    const names = branches.map((branch) => branch.name);
+    return `${target} is visible, but it has no branch \`${repo.branch}\`.`
+      + `${visible.default_branch ? ` Its default branch is \`${visible.default_branch}\`.` : ''}`
+      + `${names.length ? ` Branches: ${names.slice(0, 10).join(', ')}.` : ''}`;
+  }
+
+  /** Who the token acts as, when that is knowable, to narrow a 404 down. */
+  private async identity(): Promise<string> {
+    try {
+      const user = await this.call<{ login?: string }>('/user');
+      return user.login ? `The token authenticates as ${user.login}. ` : '';
+    } catch {
+      return 'The token did not authenticate against /user, so it may be expired or revoked. ';
+    }
   }
 
   /**

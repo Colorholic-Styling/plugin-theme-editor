@@ -15,8 +15,9 @@ import {
   editorFields,
   selectedBlockFrom,
 } from './editor-model';
-import { themeRuntimeSettings } from './theme/colorholic';
+import { themeRuntimeSettings } from './theme/renderer';
 import { applyOverridesToTemplate } from './theme/publish';
+import { buildThemeManifest } from './theme/manifest';
 import { schemaFields, sectionSchema } from './theme/schema';
 import {
   GitHubClient,
@@ -190,9 +191,20 @@ async function editor(
     url.searchParams.get('template'),
     selectedPage?.page_type ?? '',
   );
-  if (!selectedTemplate) return redirect(themeEditorHref(theme));
+  // A theme with no usable template has nowhere better to send the reader:
+  // redirecting to the editor is redirecting to this very URL, which is a
+  // redirect loop rather than an error. Say what is wrong instead.
+  if (!selectedTemplate) {
+    return adminView(env.VIEWS, 'Theme Editor', 'error', {
+      heading: `${theme.name} has no templates`,
+      message: url.searchParams.get('template')
+        ? `This theme declares no template named "${url.searchParams.get('template')}".`
+        : 'Its manifest lists no templates, so there is nothing to render. A theme '
+          + 'needs JSON or Liquid files under templates/; re-clone or re-upload it '
+          + 'if that directory was missing when it landed.',
+    });
+  }
   const language = selectedLanguage(url, meta.languages, meta.default_language);
-  const selectedBlock = selectedBlockFrom(url, selectedPage);
   const [sections, overrides] = await Promise.all([
     templateSections(selectedTemplate, store),
     templateOverrides(env, theme.id, selectedTemplate.id),
@@ -201,6 +213,20 @@ async function editor(
   const sectionByBlock = new Map(sections
     .filter((entry) => entry.blockIndex !== null)
     .map((entry) => [entry.blockIndex as number, entry]));
+
+  // The template is what says which sections a page has, so the list is drawn
+  // from it. A section whose block the page has not been given yet still
+  // belongs on it — that is exactly the section an editor needs to reach to
+  // hide it, or to see what the theme would render there.
+  const requestedSection = url.searchParams.get('section')?.trim() ?? '';
+  const urlBlock = selectedBlockFrom(url, selectedPage);
+  const activeSection = (requestedSection
+    ? sections.find((entry) => entry.key === requestedSection)
+    : urlBlock === null ? undefined : sectionByBlock.get(urlBlock)) ?? null;
+  // Selecting a section selects the block it reads, when the page has one.
+  const selectedBlock = urlBlock
+    ?? blockIndexOnPage(selectedPage, activeSection?.blockIndex ?? null);
+
   const editorBase = themeEditorHref(theme, selectedTemplate.id);
   const pageHref = selectedPage
     ? `${editorBase}&page_id=${selectedPage.id}&language=${encodeURIComponent(language)}`
@@ -210,49 +236,60 @@ async function editor(
   const choices = selectedPage
     ? blockChoices(selectedPage, selectedBlock, editorBase, language)
     : [];
-  const selectedType = selectedBlock === null
-    ? ''
-    : choices.find((block) => block.index === selectedBlock)?.type ?? '';
-  // A block row carries the toggle for the section bound to it; sections bound
-  // to no block are listed separately so every declared section is reachable.
-  const blockRows = choices.map((block) => {
-    const bound = sectionByBlock.get(block.index);
+  const blockByIndex = new Map(choices.map((block) => [block.index, block]));
+  const selectedType = activeSection?.type
+    || (selectedBlock === null ? '' : blockByIndex.get(selectedBlock)?.type ?? '');
+  const sectionRows = sections.map((entry) => {
+    const block = entry.blockIndex === null ? undefined : blockByIndex.get(entry.blockIndex);
     return {
-      ...block,
-      sectionKey: bound?.key ?? '',
-      sectionHidden: bound ? hidden.has(bound.key) : false,
+      key: entry.key,
+      label: entry.label,
+      type: entry.type,
+      /** The block the template binds this section to, if the page has it. */
+      blockIndex: block ? block.index : null,
+      blockNumber: block ? block.index + 1 : 0,
+      blockTitle: block?.label ?? '',
+      hasBlock: Boolean(block),
+      hidden: hidden.has(entry.key),
+      selected: activeSection?.key === entry.key,
+      href: `${pageHref}&section=${encodeURIComponent(entry.key)}`
+        + `${block ? `&block=${block.index}` : ''}`,
     };
   });
-  const boundKeys = new Set([...sectionByBlock.values()].map((entry) => entry.key));
-  const looseSections = sections
-    .filter((entry) => !boundKeys.has(entry.key))
-    .map((entry) => ({ ...entry, hidden: hidden.has(entry.key) }));
+  // Blocks the template reads through no declared section would otherwise have
+  // no row, so they keep one of their own rather than becoming uneditable.
+  const boundBlocks = new Set(sections.flatMap((entry) => entry.blockIndex === null
+    ? []
+    : [entry.blockIndex]));
+  const orphanBlocks = choices.filter((block) => !boundBlocks.has(block.index));
 
   // Settings mode reads the section's own `{% schema %}`, so labels, controls,
   // and the Liquid a JSON template would bind come from the theme rather than
   // from the shape of whatever happens to be stored.
   // Both panels are rendered whichever mode is requested, so switching between
   // them is a client-side toggle rather than a page load.
-  const schemaMode = url.searchParams.get('settings') === 'schema';
-  const schema = selectedBlock !== null && selectedType
-    ? await sectionSchema(store, selectedType)
-    : null;
-  // The schema panel edits the bindings of the template section bound to this
-  // block, so it needs that section's declared settings and any override.
-  const boundSection = selectedBlock === null ? undefined : sectionByBlock.get(selectedBlock);
+  // A selected section the page has no block for has nothing in the values
+  // panel, so it opens on its bindings rather than on an empty form.
+  const missingBlock = activeSection !== null && selectedBlock === null;
+  const schemaMode = missingBlock || url.searchParams.get('settings') === 'schema';
+  const schema = selectedType ? await sectionSchema(store, selectedType) : null;
+  // The schema panel edits the bindings of the selected template section, so it
+  // needs that section's declared settings and any override. A section the page
+  // has no block for still has both, which is why this no longer waits on one.
   const schemaSettings = schema
     ? schemaFields(
       schema,
       fields,
-      selectedBlock ?? 0,
+      selectedBlock ?? activeSection?.blockIndex ?? 0,
       language,
-      boundSection?.settings ?? {},
-      boundSection ? overrides.settings[boundSection.key] ?? {} : {},
+      activeSection?.settings ?? {},
+      activeSection ? overrides.settings[activeSection.key] ?? {} : {},
     )
     : [];
   const modeHref = (mode: 'values' | 'schema'): string => `${editorBase}`
     + `${selectedPage ? `&page_id=${selectedPage.id}` : ''}`
     + `&language=${encodeURIComponent(language)}`
+    + `${activeSection ? `&section=${encodeURIComponent(activeSection.key)}` : ''}`
     + `${selectedBlock === null ? '' : `&block=${selectedBlock}`}`
     + `${mode === 'schema' ? '&settings=schema' : ''}`;
 
@@ -275,28 +312,33 @@ async function editor(
     })),
     hasPages: pages.length > 0,
     visibilityAction: `${ADMIN_BASE}/visibility`,
-    looseSections,
-    hasLooseSections: looseSections.length > 0,
+    sections: sectionRows,
+    hasSections: sectionRows.length > 0,
+    orphanBlocks,
+    hasOrphanBlocks: orphanBlocks.length > 0,
     selectedPage,
     pageHref,
     language,
     languages: meta.languages.map((code) => ({ code, selected: code === language })),
-    blocks: blockRows,
-    pageSelected: selectedBlock === null,
+    pageSelected: selectedBlock === null && activeSection === null,
     pageSettingsHref: pageHref,
     selectedBlock,
-    selectedLabel: selectedBlock === null ? 'Page settings' : `Block ${selectedBlock + 1}`,
+    selectedSection: activeSection?.key ?? '',
+    selectedLabel: activeSection?.label
+      ?? (selectedBlock === null ? 'Page settings' : `Block ${selectedBlock + 1}`),
     selectedType,
     fieldGroups: groups,
     hasFields: fields.length > 0,
+    /** Hides the Values mode, which such a section has nothing to put in. */
+    missingBlock,
     schemaMode,
     schemaAction: `${ADMIN_BASE}/template-settings`,
-    schemaSection: boundSection?.key ?? '',
-    canEditSchema: access.canEdit && Boolean(boundSection),
+    schemaSection: activeSection?.key ?? '',
+    canEditSchema: access.canEdit && Boolean(activeSection),
     schemaName: schema?.name ?? '',
     schemaSettings,
     hasSchema: schemaSettings.length > 0,
-    /** Which block the schema panel describes, so a stale one is not shown. */
+    /** What the schema panel describes, so a stale one is not shown. */
     schemaBlock: selectedBlock === null ? '' : String(selectedBlock),
     valuesModeHref: modeHref('values'),
     schemaModeHref: modeHref('schema'),
@@ -309,6 +351,14 @@ async function editor(
       languages: meta.languages,
       language,
       canEdit: access.canEdit,
+      // The list is the template's, so composing a panel in the browser needs
+      // the same section list the server drew it from.
+      sections: sectionRows.map((entry) => ({
+        key: entry.key,
+        label: entry.label,
+        type: entry.type,
+        blockIndex: entry.blockIndex,
+      })),
     }) : '{}',
     saveAction: `${ADMIN_BASE}/save`,
     assetHref: `${ADMIN_BASE}/assets/theme-editor.js`,
@@ -498,10 +548,12 @@ async function cloneThemeFromGitHub(request: Request, env: PluginEnv): Promise<R
 
     const store = new R2ThemeStore(env.THEMES as R2Bucket, themeId);
     for (const file of files) await store.write(file.path, file.content);
-    // The manifest carries the repo, so pushing later needs no second setup.
-    await store.write('/theme-manifest.json', themeManifestWith(
-      files.find((file) => file.path === '/theme-manifest.json')?.content,
-      repo,
+    // A theme repository has no manifest — it is a build product — so one is
+    // generated from what arrived. Without it the theme lands with no
+    // templates at all. The repo goes in too, so pushing needs no second setup.
+    await store.write('/theme-manifest.json', buildThemeManifest(
+      files.map((file) => file.path),
+      { ...themeMetaFrom(files.find((file) => file.path === '/theme-manifest.json')?.content), repo },
     ));
     return githubResult(request, true,
       `Cloned ${files.length} files from ${repo.owner}/${repo.repo}@${repo.branch} into ${themeId}.`);
@@ -573,16 +625,19 @@ function githubResult(request: Request, ok: boolean, message: string): Response 
   return redirect(`${ADMIN_BASE}?flash=${encodeURIComponent(message)}`);
 }
 
-/** Keeps the theme's own manifest, adding where it came from. */
-function themeManifestWith(existing: string | undefined, repo: GitHubRepo): string {
-  let manifest: Record<string, unknown> = {};
+/** A theme's own naming, when its repository happens to carry a manifest. */
+function themeMetaFrom(existing: string | undefined): Record<string, unknown> {
   try {
     const parsed = JSON.parse(existing ?? '{}') as unknown;
-    if (isRecord(parsed)) manifest = parsed;
+    if (!isRecord(parsed)) return {};
+    const { name, description } = parsed;
+    return {
+      ...(typeof name === 'string' ? { name } : {}),
+      ...(typeof description === 'string' ? { description } : {}),
+    };
   } catch {
-    manifest = {};
+    return {};
   }
-  return `${JSON.stringify({ ...manifest, repo }, null, 2)}\n`;
 }
 
 async function uploadTheme(request: Request, env: PluginEnv, url: URL): Promise<Response> {
@@ -611,6 +666,11 @@ async function uploadTheme(request: Request, env: PluginEnv, url: URL): Promise<
     if (!/^\/[a-z0-9][a-z0-9./_-]*$/i.test(path) || path.includes('..')) continue;
     await store.write(path, source);
     written.push(path);
+  }
+  // Regenerated from what actually landed, so an upload missing the manifest —
+  // or carrying a stale one — still yields a usable theme.
+  if (written.length > 0 && !written.includes('/theme-manifest.json')) {
+    await store.write('/theme-manifest.json', buildThemeManifest(written));
   }
   return Response.json({ ok: true, theme: themeId, written: written.length, paths: written.sort() });
 }
@@ -812,6 +872,13 @@ export function editorError(env: PluginEnv, error: unknown): Promise<Response> {
 function selectedPageFrom(url: URL, pages: CmsPage[]): CmsPage | null {
   const requested = positiveInt(url.searchParams.get('page_id'));
   return (requested ? pages.find((page) => page.id === requested) : null) ?? pages[0] ?? null;
+}
+
+/** The index back, only when the page actually carries that block. */
+function blockIndexOnPage(page: CmsPage | null, index: number | null): number | null {
+  if (!page || index === null) return null;
+  const blocks = page.lect?._blocks;
+  return Array.isArray(blocks) && isRecord(blocks[index]) ? index : null;
 }
 
 function selectedLanguage(url: URL, languages: string[], fallback: string): string {
