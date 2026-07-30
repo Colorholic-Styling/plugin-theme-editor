@@ -10,6 +10,19 @@ export interface PluginEnv extends CmsClientEnv {
   THEMES?: R2Bucket;
   /** Fine-grained GitHub token (Contents: read and write) for theme sync. */
   GITHUB_TOKEN?: string;
+  /** GitHub App installation metadata, keyed by the CMS tenant ref. */
+  GITHUB_CONNECTIONS?: KVNamespace;
+  GITHUB_APP_ID?: string;
+  GITHUB_APP_SLUG?: string;
+  /** PKCS#1 or PKCS#8 PEM private key generated for the GitHub App. */
+  GITHUB_APP_PRIVATE_KEY?: string;
+  GITHUB_APP_CLIENT_ID?: string;
+  GITHUB_APP_CLIENT_SECRET?: string;
+  /** HMAC secret for the short-lived tenant state sent through GitHub. */
+  GITHUB_APP_STATE_SECRET?: string;
+  /** Added by tenantClientEnv after an authenticated host request. */
+  CMS_TENANT_ID?: string;
+  CMS_TENANT_REF?: string;
   VIEWS: Fetcher;
   CF_VERSION_METADATA?: WorkerVersionMetadata;
   THEME_ID?: string;

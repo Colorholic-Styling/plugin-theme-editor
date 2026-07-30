@@ -15,6 +15,11 @@ binding = "CF_VERSION_METADATA"
 
 [vars]
 CMS_URL = "http://localhost:8787"
+# GitHub App identity values are safe as vars. Configure the private key,
+# client secret, and state secret with `wrangler secret put`; see README.
+# GITHUB_APP_ID = "REPLACE_WITH_GITHUB_APP_ID"
+# GITHUB_APP_SLUG = "REPLACE_WITH_GITHUB_APP_SLUG"
+# GITHUB_APP_CLIENT_ID = "REPLACE_WITH_GITHUB_APP_CLIENT_ID"
 
 # Section visibility is a per-template decision, so those overrides need their
 # own writable store. Local
@@ -24,6 +29,13 @@ CMS_URL = "http://localhost:8787"
 [[kv_namespaces]]
 binding = "THEME_OVERRIDES"
 id = "REPLACE_WITH_THEME_EDITOR_OVERRIDES_KV_ID"
+
+# Tenant-scoped GitHub App installation metadata. It stores installation ids,
+# never GitHub access tokens. Provision with:
+#   npm run kv:setup -- --binding=GITHUB_CONNECTIONS
+# [[kv_namespaces]]
+# binding = "GITHUB_CONNECTIONS"
+# id = "REPLACE_WITH_THEME_EDITOR_GITHUB_CONNECTIONS_KV_ID"
 
 # The theme library. The bucket is the root: every top-level folder is a theme,
 # so `example-theme/templates/page.json` is that theme's page template.

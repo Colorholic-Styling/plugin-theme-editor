@@ -8,6 +8,10 @@ import {
 import { editorError, handleThemeEditorAdmin } from './editor';
 import MANIFEST from './manifest.json';
 import { themeEditorAccessForRequest } from './permissions';
+import {
+  GITHUB_CALLBACK_PATH,
+  handleGitHubAppCallback,
+} from './theme/github-app';
 import type { PluginEnv } from './types';
 
 const PLUGIN_VIEW_PREFIXES = ['/templates/', '/sections/', '/snippets/', '/locales/'];
@@ -22,6 +26,9 @@ export default {
     }
     if (path === '/__plugin/tenants/revoke') {
       return handleTenantRevoke(request, baseEnv, { pluginId: MANIFEST.id });
+    }
+    if (path === GITHUB_CALLBACK_PATH) {
+      return handleGitHubAppCallback(request, baseEnv);
     }
 
     if (path === '/__plugin/manifest') {

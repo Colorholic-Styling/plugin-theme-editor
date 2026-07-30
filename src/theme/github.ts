@@ -140,6 +140,14 @@ export class GitHubClient {
     }));
   }
 
+  /** Resolves a repository's default branch for the connected-repository form. */
+  async defaultBranch(owner: string, repo: string): Promise<string> {
+    const value = await this.call<{ default_branch?: unknown }>(`/repos/${owner}/${repo}`);
+    return typeof value.default_branch === 'string' && value.default_branch.trim()
+      ? value.default_branch.trim()
+      : 'main';
+  }
+
   /**
    * Commits the given files onto the branch. The new tree is based on the
    * branch's current one, so files this editor never touched are carried over
@@ -206,6 +214,12 @@ export function parseRepo(value: Partial<Record<keyof GitHubRepo, string>>): Git
 /** Accepts what a browser address bar holds, so a repo URL can be pasted. */
 export function repoFromUrl(url: string): Pick<GitHubRepo, 'owner' | 'repo'> | null {
   const match = /github\.com[/:]([\w.-]+)\/([\w.-]+?)(?:\.git)?\/?$/.exec(url.trim());
+  return match ? { owner: match[1], repo: match[2] } : null;
+}
+
+/** Accepts an installation repository selector such as `owner/theme-repo`. */
+export function repoFromFullName(value: string): Pick<GitHubRepo, 'owner' | 'repo'> | null {
+  const match = /^([\w.-]+)\/([\w.-]+)$/.exec(value.trim());
   return match ? { owner: match[1], repo: match[2] } : null;
 }
 
