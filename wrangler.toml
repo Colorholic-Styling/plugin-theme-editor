@@ -14,12 +14,12 @@ run_worker_first = true
 binding = "CF_VERSION_METADATA"
 
 [vars]
-CMS_URL = "http://localhost:8787"
+CMS_URL = "https://cms.eventuai.com"
 # GitHub App identity values are safe as vars. Configure the private key,
 # client secret, and state secret with `wrangler secret put`; see README.
-# GITHUB_APP_ID = "REPLACE_WITH_GITHUB_APP_ID"
-# GITHUB_APP_SLUG = "REPLACE_WITH_GITHUB_APP_SLUG"
-# GITHUB_APP_CLIENT_ID = "REPLACE_WITH_GITHUB_APP_CLIENT_ID"
+GITHUB_APP_ID = "4438299"
+# GITHUB_APP_SLUG = "eventuai-theme-editor"
+# GITHUB_APP_CLIENT_ID = "Iv23li3rHFYFrjmqLsk5"
 
 
 # Section visibility is a per-template decision, so those overrides need their
