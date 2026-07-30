@@ -39,6 +39,6 @@ bucket_name = "cms-themes"
 #
 # For multi-tenant deployment bind a TENANTS KV namespace. Local development
 # can use CMS_URL + PLUGIN_SECRET until the registry is configured.
-# [[kv_namespaces]]
+[[kv_namespaces]]
 binding = "TENANTS"
 id = "560f47c46bc04bb08d4ed1fdad839be9"
