@@ -6,3 +6,4 @@ test/vendor/
 .dist/
 
 views/assets/theme-preview.js
+*.pem
