@@ -13,8 +13,8 @@ run_worker_first = true
 [version_metadata]
 binding = "CF_VERSION_METADATA"
 
-[vars]
-CMS_URL = "http://localhost:8787"
+#[vars]
+#CMS_URL = "http://localhost:8787"
 
 # Section visibility is a per-template decision, so those overrides need their
 # own writable store. Local
@@ -23,7 +23,7 @@ CMS_URL = "http://localhost:8787"
 #   npm run kv:setup -- --binding=THEME_OVERRIDES
 [[kv_namespaces]]
 binding = "THEME_OVERRIDES"
-id = "REPLACE_WITH_THEME_EDITOR_OVERRIDES_KV_ID"
+id = "5881153cac594025ac7f2e19bd8ffadb"
 
 # The theme library. The bucket is the root: every top-level folder is a theme,
 # so `example-theme/templates/page.json` is that theme's page template.
@@ -40,5 +40,5 @@ bucket_name = "cms-themes"
 # For multi-tenant deployment bind a TENANTS KV namespace. Local development
 # can use CMS_URL + PLUGIN_SECRET until the registry is configured.
 # [[kv_namespaces]]
-# binding = "TENANTS"
-# id = "REPLACE_WITH_THEME_EDITOR_TENANTS_KV_ID"
+binding = "TENANTS"
+id = "560f47c46bc04bb08d4ed1fdad839be9"
