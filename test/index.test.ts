@@ -196,11 +196,13 @@ describe('plugin contract', () => {
     expect(response.status).toBe(200);
     const manifest = await response.json() as {
       id: string;
+      autoTenant: boolean;
       nav: Array<{ href: string }>;
       assets: Array<{ path: string }>;
       contentTypes: { readTypes: string[]; writeTypes: string[] };
     };
     expect(manifest.id).toBe('theme-editor');
+    expect(manifest.autoTenant).toBe(true);
     expect(manifest.nav[0]?.href).toBe('');
     expect(manifest.assets).toEqual([
       { path: '/assets/theme-editor.js', label: 'Theme editor local block composer' },
