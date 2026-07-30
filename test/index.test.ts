@@ -96,6 +96,33 @@ function kv(seed: Record<string, string> = {}): KVNamespace & { store: Map<strin
   } as unknown as KVNamespace & { store: Map<string, string> };
 }
 
+function tenantKv(): KVNamespace & { store: Map<string, string> } {
+  const store = new Map<string, string>();
+  return {
+    store,
+    async list({ prefix = '' }: { prefix?: string } = {}) {
+      return {
+        keys: [...store.keys()]
+          .filter((key) => key.startsWith(prefix))
+          .map((name) => ({ name })),
+        list_complete: true,
+        cacheStatus: null,
+      };
+    },
+    async get(key: string, type?: string) {
+      const value = store.get(key);
+      if (value === undefined) return null;
+      return type === 'json' ? JSON.parse(value) : value;
+    },
+    async put(key: string, value: string) {
+      store.set(key, value);
+    },
+    async delete(key: string) {
+      store.delete(key);
+    },
+  } as unknown as KVNamespace & { store: Map<string, string> };
+}
+
 function adminRequest(
   path: string,
   init: RequestInit = {},
@@ -208,6 +235,46 @@ describe('plugin contract', () => {
     ]);
     expect(manifest.contentTypes.readTypes).toEqual(['*']);
     expect(manifest.contentTypes.writeTypes).toEqual(['*']);
+  });
+
+  it('automatically enrolls and revokes a CMS tenant', async () => {
+    const cmsOrigin = 'https://cms.example.com';
+    const ticket = 't'.repeat(64);
+    const secret = 's'.repeat(64);
+    const tenants = tenantKv();
+    const tenantEnv = env({
+      CMS_URL: undefined,
+      PLUGIN_SECRET: undefined,
+      TENANTS: tenants,
+    });
+
+    vi.stubGlobal('fetch', vi.fn(async (input: RequestInfo | URL) => {
+      expect(String(input)).toBe(`${cmsOrigin}/__cms/tenant/claim`);
+      return Response.json({
+        tenant: cmsOrigin,
+        cms_url: cmsOrigin,
+        plugin_id: 'theme-editor',
+        secret,
+      });
+    }));
+
+    const enrolled = await plugin.fetch(new Request('https://plugin.example.com/__plugin/tenants/enroll', {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ tenant: cmsOrigin, plugin_id: 'theme-editor', ticket }),
+    }), tenantEnv);
+    expect(enrolled.status).toBe(200);
+    expect(tenants.store.has(`tenant:${cmsOrigin}`)).toBe(true);
+
+    const revoked = await plugin.fetch(new Request('https://plugin.example.com/__plugin/tenants/revoke', {
+      method: 'POST',
+      headers: {
+        'x-cms-tenant': cmsOrigin,
+        'x-plugin-secret': secret,
+      },
+    }), tenantEnv);
+    expect(revoked.status).toBe(200);
+    expect(tenants.store.has(`tenant:${cmsOrigin}`)).toBe(false);
   });
 
   it('serves the approved focus asset at bare and admin-proxy paths', async () => {

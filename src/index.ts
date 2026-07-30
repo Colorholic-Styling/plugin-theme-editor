@@ -1,4 +1,6 @@
 import {
+  handleTenantEnroll,
+  handleTenantRevoke,
   requireTenant,
   serveViewAsset,
   tenantClientEnv,
@@ -14,6 +16,13 @@ export default {
   async fetch(request: Request, baseEnv: PluginEnv): Promise<Response> {
     const url = new URL(request.url);
     const path = url.pathname;
+
+    if (path === '/__plugin/tenants/enroll') {
+      return handleTenantEnroll(request, baseEnv, { pluginId: MANIFEST.id });
+    }
+    if (path === '/__plugin/tenants/revoke') {
+      return handleTenantRevoke(request, baseEnv, { pluginId: MANIFEST.id });
+    }
 
     if (path === '/__plugin/manifest') {
       return Response.json({
@@ -72,4 +81,3 @@ function pluginViewAsset(views: Fetcher, path: string): Promise<Response> | Resp
   }
   return serveViewAsset(views, path, { bareLiquidSnippets: true });
 }
-
