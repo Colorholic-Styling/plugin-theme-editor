@@ -180,6 +180,43 @@
                   Edit theme
                 </a>
               </div>
+
+              {%- comment -%}
+                Deleting removes files and cannot be undone, so it asks for the
+                theme id to be typed rather than acting on one click. A
+                disclosure keeps that out of the way until it is wanted, and
+                needs no script to open.
+              {%- endcomment -%}
+              {% if theme.canDelete and canEdit %}
+                <details class="mt-2 text-left">
+                  <summary class="cursor-pointer text-right text-xs font-semibold text-gray-500 hover:text-red-700">
+                    Delete theme
+                  </summary>
+                  <form method="post" action="{{ deleteAction }}"
+                        class="mt-2 rounded-lg border border-red-200 bg-red-50 p-3"
+                        data-confirm="Delete {{ theme.name }} and everything in it? This cannot be undone.">
+                    <input type="hidden" name="theme" value="{{ theme.id }}">
+                    <p class="mb-2 text-xs text-red-700">
+                      Removes every file in this theme{% if theme.repo %}. The repository at {{ theme.source }} is not touched, so it can be cloned again{% else %} and it has no repository to clone it back from{% endif %}.
+                    </p>
+                    <label class="block text-xs font-medium text-red-700">
+                      Type <span class="font-mono">{{ theme.id }}</span> to confirm
+                      <input type="text" name="confirm_id" autocomplete="off" spellcheck="false"
+                             {%- comment -%}
+                               indigo, not red: the host compiles Tailwind from
+                               its own files, and `focus:ring-red-500` is not
+                               among the classes it emits — it would silently
+                               leave this input with no focus ring at all.
+                             {%- endcomment -%}
+                             class="mt-1 block h-10 w-full rounded-lg border border-red-300 px-3 font-mono text-sm focus:border-transparent focus:outline-none focus:ring-2 focus:ring-indigo-500">
+                    </label>
+                    <button type="submit"
+                            class="mt-2 inline-flex h-10 w-full items-center justify-center rounded-lg bg-red-600 px-4 text-sm font-semibold text-white hover:bg-red-700">
+                      Delete {{ theme.name }}
+                    </button>
+                  </form>
+                </details>
+              {% endif %}
             </td>
           </tr>
         {% else %}

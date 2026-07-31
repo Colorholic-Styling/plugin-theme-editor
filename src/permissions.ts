@@ -30,6 +30,19 @@ export function actingUserId(request: Request): string {
   return typeof user.id === 'string' || typeof user.id === 'number' ? String(user.id) : '';
 }
 
+/**
+ * Who the host says is making this request. Presence needs a name to label an
+ * avatar with, and an id to tell the reader's own entry from everyone else's.
+ * The host forwards no avatar, so one is never shown for a theme editor.
+ */
+export function actingUser(request: Request): { id: string; name: string } {
+  const user = cmsUser(request) as { id?: unknown; name?: unknown } | null;
+  return {
+    id: actingUserId(request),
+    name: typeof user?.name === 'string' ? user.name : '',
+  };
+}
+
 function cmsUser(request: Request): {
   id?: unknown;
   role?: unknown;

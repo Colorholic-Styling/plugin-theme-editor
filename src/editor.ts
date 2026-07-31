@@ -6,7 +6,7 @@ import {
   type CmsPage,
 } from '@lionrockjs/worker-cms-plugin';
 import { ADMIN_BASE, PLUGIN_ID } from './constants';
-import { actingUserId, forbidden, type ThemeEditorAccess } from './permissions';
+import { actingUser, actingUserId, forbidden, type ThemeEditorAccess } from './permissions';
 import { cmsClient, contentMeta, listReadablePages, updatePageLect } from './cms';
 import { themeBundle } from './theme/bundle';
 import {
@@ -33,11 +33,12 @@ import {
   githubAppDashboard,
   githubInstallUrl,
 } from './theme/github-app';
-import { isReservedThemeId, isWritable, R2ThemeStore } from './theme/store';
+import { deleteBucketTheme, isReservedThemeId, isWritable, R2ThemeStore } from './theme/store';
 
 import {
   allTemplateOverrides,
   clearTemplateOverrides,
+  clearThemeOverrides,
   hiddenSections,
   MissingOverrideStoreError,
   setSectionHidden,
@@ -91,6 +92,16 @@ export async function handleThemeEditorAdmin(
     return toggleSectionVisibility(request, env);
   }
 
+  // The bindings panel for one section, as JSON. It is composed from the
+  // theme's own `{% schema %}`, which the browser has no copy of — without
+  // this the editor could only reach it by loading the whole page again, so
+  // switching to Schema, or moving between sections while in it, threw away
+  // the client-side selection and reloaded.
+  if (section === 'section-schema') {
+    if (!access.canView) return forbidden();
+    return sectionSchemaPanel(env, url, access);
+  }
+
   // Read and clear the override layer. A Worker cannot write to the theme's
   // own files, so `npm run theme:apply` runs on the machine that can, reads
   // this, writes the templates, and clears what it applied.
@@ -137,6 +148,12 @@ export async function handleThemeEditorAdmin(
       : cloneThemeFromGitHub(request, env);
   }
 
+  if (section === 'delete') {
+    if (!access.canEdit) return forbidden();
+    if (request.method !== 'POST') return redirect(ADMIN_BASE);
+    return deleteTheme(request, env);
+  }
+
   if (section === 'upload') {
     if (!access.canEdit) return forbidden();
     if (request.method !== 'POST') return new Response('POST required.', { status: 405 });
@@ -165,7 +182,7 @@ export async function handleThemeEditorAdmin(
     if (!access.canView) return forbidden();
     const theme = await themeFromId(env, url.searchParams.get('theme'));
     if (!theme) return redirect(ADMIN_BASE);
-    return editor(env, url, access, theme);
+    return editor(env, url, access, theme, actingUser(request));
   }
 
   return redirect(ADMIN_BASE);
@@ -200,6 +217,9 @@ async function themesDashboard(
       ...theme,
       editorHref: themeEditorHref(theme),
       canPush: Boolean(theme.repo),
+      // Only a bucket theme is the editor's to remove; one served from the
+      // asset bundle belongs to a deploy.
+      canDelete: theme.storage === 'bucket',
     })),
     canEdit: access.canEdit,
     hasGitHubToken: access.canEdit && Boolean(env.GITHUB_TOKEN),
@@ -216,6 +236,7 @@ async function themesDashboard(
     githubDisconnectAction: `${ADMIN_BASE}/github/disconnect`,
     cloneAction: `${ADMIN_BASE}/github`,
     pushAction: `${ADMIN_BASE}/github/push`,
+    deleteAction: `${ADMIN_BASE}/delete`,
     flash: url.searchParams.get('flash') || '',
   });
 }
@@ -225,6 +246,7 @@ async function editor(
   url: URL,
   access: ThemeEditorAccess,
   theme: ThemeDefinition,
+  user: { id: string; name: string },
 ): Promise<Response> {
   const meta = await contentMeta(env);
   const pages = await listReadablePages(env, meta);
@@ -354,6 +376,15 @@ async function editor(
     })),
     dashboardHref: ADMIN_BASE,
     canEdit: access.canEdit,
+    // Presence and field highlighting reuse the CMS's own editing session for
+    // this page, so someone in the native editor and someone here see each
+    // other. The endpoints are the host's, on the same origin as this page —
+    // the plugin never proxies them, so nothing here has to be trusted with a
+    // second view of who is editing what.
+    presenceUserId: user.id,
+    presenceUserName: user.name,
+    presencePageId: selectedPage ? String(selectedPage.id) : '',
+    hasPresence: Boolean(selectedPage && user.id),
     // Publishing writes the override layer into the theme's own files, and —
     // for a theme that came from GitHub — commits them in the same step, so
     // the button says which of the two it is about to do.
@@ -392,6 +423,8 @@ async function editor(
     missingBlock,
     schemaMode,
     schemaAction: `${ADMIN_BASE}/template-settings`,
+    /** Where the browser re-reads the bindings panel when the selection moves. */
+    sectionSchemaAction: `${ADMIN_BASE}/section-schema`,
     schemaSection: activeSection?.key ?? '',
     canEditSchema: access.canEdit && Boolean(activeSection),
     schemaName: schema?.name ?? '',
@@ -519,6 +552,78 @@ async function previewData(
  * that template renders — unlike the block values `save` writes, which belong
  * to one page.
  */
+/**
+ * The Schema panel's model for one section, without the rest of the editor.
+ *
+ * The editor page renders both panels, so switching between them is local —
+ * but only for the selection the server rendered. Focusing another section in
+ * the browser leaves the schema panel describing the previous one, and the
+ * bindings come from the theme's `{% schema %}`, which the browser has no copy
+ * of. This is how it gets one: same shape as the `schemaSettings` the page is
+ * built with, so the client renders the identical panel.
+ */
+async function sectionSchemaPanel(
+  env: PluginEnv,
+  url: URL,
+  access: ThemeEditorAccess,
+): Promise<Response> {
+  const theme = await themeFromId(env, url.searchParams.get('theme'));
+  if (!theme) return Response.json({ ok: false, message: 'Theme not found.' }, { status: 404 });
+
+  const store = themeStore(env, theme);
+  const templates = await themeTemplates(env, theme, store);
+  const selectedTemplate = selectThemeTemplate(templates, url.searchParams.get('template'));
+  if (!selectedTemplate) {
+    return Response.json({ ok: false, message: 'Theme template not found.' }, { status: 404 });
+  }
+
+  const sectionKey = url.searchParams.get('section')?.trim() ?? '';
+  const sections = await templateSections(selectedTemplate, store);
+  const activeSection = sections.find((entry) => entry.key === sectionKey) ?? null;
+  if (sectionKey && !activeSection) {
+    return Response.json({ ok: false, message: 'Theme section not found.' }, { status: 404 });
+  }
+
+  const pageId = positiveInt(url.searchParams.get('page_id'));
+  const meta = await contentMeta(env);
+  const language = selectedLanguage(url, meta.languages, meta.default_language);
+  // One page, not the whole readable list: this answers a panel switch, and a
+  // page the caller cannot read simply yields no values to show beneath the
+  // bindings rather than failing the request.
+  const page = pageId ? await cmsClient(env).get(pageId).catch(() => null) : null;
+  const requestedBlock = positiveOrZeroInt(url.searchParams.get('block'));
+  const selectedBlock = blockIndexOnPage(page, requestedBlock ?? activeSection?.blockIndex ?? null);
+
+  const overrides = await templateOverrides(env, theme.id, selectedTemplate.id);
+  const selectedType = activeSection?.type ?? '';
+  const schema = selectedType ? await sectionSchema(store, selectedType) : null;
+  const fields = page ? editorFields(page, meta.languages, language, selectedBlock) : [];
+  const schemaSettings = schema
+    ? schemaFields(
+      schema,
+      fields,
+      selectedBlock ?? activeSection?.blockIndex ?? 0,
+      language,
+      activeSection?.settings ?? {},
+      activeSection ? overrides.settings[activeSection.key] ?? {} : {},
+    )
+    : [];
+
+  return Response.json({
+    ok: true,
+    section: activeSection?.key ?? '',
+    block: selectedBlock,
+    schemaName: schema?.name ?? '',
+    schemaSettings,
+    hasSchema: schemaSettings.length > 0,
+    // A section the page has no block for has no values to edit, so the client
+    // knows to keep the Values tab out of reach rather than offering an empty
+    // form — the same rule the server-rendered page applies.
+    missingBlock: activeSection !== null && selectedBlock === null,
+    canEditSchema: access.canEdit && Boolean(activeSection),
+  }, { headers: { 'cache-control': 'no-store' } });
+}
+
 async function toggleSectionVisibility(request: Request, env: PluginEnv): Promise<Response> {
   const form = await request.formData();
   const theme = await themeFromId(env, formString(form.get('theme')) || null);
@@ -633,6 +738,50 @@ async function cloneThemeFromGitHub(request: Request, env: PluginEnv): Promise<R
   } catch (error) {
     return githubResult(request, false, gitHubMessage(error));
   }
+}
+
+/**
+ * Removes a theme from the bucket, with its override layer.
+ *
+ * This deletes files and cannot be undone, so it asks for the theme id back
+ * rather than acting on a single click: the confirm dialog is a browser
+ * behavior the request never sees, and a stray POST to this path would
+ * otherwise be enough. Nothing on GitHub is touched — a theme that came from a
+ * repository can be cloned again, and one that did not is gone for good, which
+ * is what the confirmation says.
+ */
+async function deleteTheme(request: Request, env: PluginEnv): Promise<Response> {
+  const form = await request.formData();
+  const theme = await themeFromId(env, formString(form.get('theme')) || null);
+  if (!theme) return githubResult(request, false, 'Theme not found.');
+
+  if (theme.storage !== 'bucket' || !env.THEMES) {
+    return githubResult(
+      request,
+      false,
+      'This theme is served from the asset bundle, which a deploy owns rather than the editor.',
+    );
+  }
+  if (formString(form.get('confirm_id')) !== theme.id) {
+    return githubResult(request, false, `Type ${theme.id} to confirm deleting it.`);
+  }
+
+  const removed = await deleteBucketTheme(env.THEMES, theme.id, themeScope(env));
+  // Best effort, and deliberately after the files: an override layer with no
+  // theme is inert, while a theme whose files were kept because its overrides
+  // could not be cleared would still be listed and still be broken.
+  let overrides = 0;
+  try {
+    overrides = await clearThemeOverrides(env, theme.id);
+  } catch (error) {
+    console.warn(`Deleted theme ${theme.id} but could not clear its overrides:`, error);
+  }
+
+  return githubResult(
+    request,
+    true,
+    `Deleted ${theme.name} (${removed} file(s)${overrides ? `, ${overrides} pending edit(s)` : ''}).`,
+  );
 }
 
 /** Commits the theme's templates back to the repository it was cloned from. */

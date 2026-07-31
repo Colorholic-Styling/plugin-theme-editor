@@ -88,7 +88,7 @@ CMS admin
                  │                                    editor page's renderer from
                  │                                    /preview/data + /preview/bundle
                  ├─ block focus ───────────────────▶ browser composition from page lect
-                 ├─ section show/hide ─────────────▶ THEME_OVERRIDES KV per template
+                 ├─ section show/hide ─────────────▶ plugin state on the CMS
                  └─ AJAX settings save ────────────▶ PATCH /__cms/pages/:id
 ```
 
@@ -225,7 +225,7 @@ matched, which agrees whenever the binding is still the theme's own; the editor
 replaces every hint once the renderer is up.
 
 Saving posts to `/template-settings`, which writes those bindings into the
-`THEME_OVERRIDES` KV alongside the hidden set — the theme's own template file is
+override layer alongside the hidden set — the theme's own template file is
 a read-only asset that `theme:sync` regenerates, so the edit is layered over it.
 The compiler merges the override into the section's declared settings before
 resolving them, and the same set is handed to the browser renderer, so the frame
@@ -513,29 +513,73 @@ silently leaving the repository behind.
 refuses while any editor changes are still unpublished — pushing then would put
 a copy of the theme *without* them into the repository and look like it worked.
 
+### Presence and field highlighting
+
+The editor shows who else has this page open, and outlines the field they are
+in. Both come from the CMS's **own** editing session for the page — the same
+`/admin/api/presence/:pageId` and `/admin/api/sync/:pageId` the native editor
+uses — so someone editing in the native editor and someone editing here see
+each other rather than each keeping a private idea of who is present. The
+plugin never proxies those endpoints; the browser calls them directly on the
+CMS origin.
+
+Field highlighting is sent as well as received, but **only** `focus`/`blur`,
+which the host relays and never stores. An `op` would join the shared overlay
+of uncommitted edits, and that overlay is committed by the CMS's own save
+route — which this editor does not use, it writes through the plugin API — so
+an op sent from here would leave every other editor showing a pending change
+that nothing ever clears.
+
+Two limits worth knowing:
+
+- The host identifies a field by its input's `name`, and the two editors name
+  the same data differently (`field:/_blocks/0/title/en` here, blueprint syntax
+  natively). So *presence* is shared across both editors, while a field
+  outline only appears between people using the same one.
+- The host forwards no avatar to plugins, so a theme editor shows as initials.
+
+All of it is an enhancement: the editing session needs the CMS's `content:write`
+permission, and a user without it gets an editor that behaves exactly as it did
+before.
+
 ### Section visibility
 
 Hiding a section drops its key from the `order` the preview compiles, leaving
 the theme's own template file untouched. That decision belongs to the template
 rather than to one page's content, so it cannot live in a page's `lect`; and
 `.dist/views/theme/` is a read-only asset subtree that `theme:sync` regenerates, so
-it cannot be written back to the theme either. It is stored in the
-`THEME_OVERRIDES` KV namespace instead, keyed by tenant, theme, and template:
+it cannot be written back to the theme either. It is stored on the CMS instead,
+as plugin state, one key per theme:
 
 ```text
-sections:<cms-origin>:<theme-id>:<template-id> → {"hidden":["hero"]}
+theme.overrides.<theme-id> → {"page":{"hidden":["hero"],"settings":{}}}
 ```
+
+The host owns it for the same reason it owns the GitHub connection: these are
+one CMS's content decisions, and a record kept in this Worker's KV would
+outlive the host and stay invisible to its admins. It also needs D1's strong
+consistency — this is a read-modify-write, and under KV's eventual consistency
+a toggle could visibly bounce back for a few seconds.
+
+One key per theme rather than per template keeps reading them all a point read
+instead of a scan, keeps that read-modify-write to a single row, and bounds the
+key count by the number of themes.
 
 Hidden *keys* are stored rather than a copy of the order array, so a section
 the theme author adds later shows up instead of being lost to a stale snapshot.
-Reads degrade to "nothing hidden" when the namespace is unbound — an
-unprovisioned store must never blank out a preview — while writes report the
-missing binding. `wrangler dev` uses Miniflare's local KV and needs no setup;
-provision a real namespace before deploying:
+Reads degrade to "nothing hidden" when the CMS cannot be reached — an
+unreachable store must never blank out a preview, and this layer only affects
+the editor's own preview, since the public site renders from the published
+theme files — while writes report that the change did not land.
 
-```bash
-npm run kv:setup -- --binding=THEME_OVERRIDES
-```
+Nothing is cached: overrides are read straight after they are written, so a
+toggle handled by one isolate has to be visible to the next request whichever
+isolate takes it.
+
+Installs predating this keep their edits: entries still in the legacy
+`THEME_OVERRIDES` namespace are adopted the first time a theme is opened,
+collapsed into the per-theme record, and deleted from KV — so the namespace
+drains on its own and can then be unbound.
 
 The toggle posts to `/admin/plugins/theme-editor/visibility` and needs
 `theme-editor:write`. When the frame can be redrawn in the page, the editor
@@ -556,7 +600,7 @@ every declared section stays reachable.
    (features, services, steps) get declared labels and controls too; the
    section-level `settings[]` already come from the theme.
 2. Add block and item add/delete/reorder operations with the CMS structured
-   editing contract, and extend `THEME_OVERRIDES` from section visibility to
+   editing contract, and extend the override layer from section visibility to
    section reordering.
 3. Add draft preview support for related pages, media proxy behavior, template
    diagnostics, and responsive viewport controls.

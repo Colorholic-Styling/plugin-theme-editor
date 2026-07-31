@@ -1,7 +1,8 @@
 import { readFile } from 'node:fs/promises';
 import { fileURLToPath } from 'node:url';
 import { afterEach, describe, expect, it, vi } from 'vitest';
-import { clearTenantCache, tenantRef, type CmsPage } from '@lionrockjs/worker-cms-plugin';
+import { clearPluginStateCache, clearTenantCache, tenantRef, type CmsPage } from '@lionrockjs/worker-cms-plugin';
+import { cmsState, themeOverridesKey } from './cms-state';
 import { hostLiquid } from './host-liquid';
 import worker from '../src/index';
 import { applyEditorFields, editorFields } from '../src/editor-model';
@@ -153,6 +154,13 @@ interface CmsCall {
   body: unknown;
 }
 
+/**
+ * The host's plugin-state store, shared by every call in a test. The theme
+ * editor keeps its override layer there, so a handler that only answers page
+ * and content-meta calls would otherwise see requests it does not recognise.
+ */
+let state = cmsState();
+
 function mockCms(handler: (call: CmsCall) => unknown | Response): CmsCall[] {
   const calls: CmsCall[] = [];
   vi.stubGlobal('fetch', async (input: RequestInfo | URL, init?: RequestInit) => {
@@ -163,6 +171,10 @@ function mockCms(handler: (call: CmsCall) => unknown | Response): CmsCall[] {
       headers: new Headers(init?.headers),
       body: init?.body ? JSON.parse(String(init.body)) : undefined,
     };
+
+    const hosted = state.handle(url, call.method, call.body);
+    if (hosted) return hosted;
+
     calls.push(call);
     const result = handler(call);
     return result instanceof Response ? result : Response.json(result);
@@ -227,6 +239,8 @@ async function renderThemesSection(data: Record<string, unknown>): Promise<strin
 afterEach(() => {
   vi.unstubAllGlobals();
   clearTenantCache();
+  clearPluginStateCache();
+  state = cmsState();
 });
 
 describe('plugin contract', () => {
@@ -421,6 +435,54 @@ describe('theme editor routes', () => {
     expect(html).toContain('Development theme');
     expect(html).toContain('Local .dist/views/theme');
     expect(html).toContain('Edit theme');
+    // An asset-bundle theme belongs to a deploy, so the editor offers no way
+    // to remove it.
+    expect(html).not.toContain('Delete theme');
+  });
+
+  it('offers deleting a bucket theme behind a typed confirmation', async () => {
+    const withRepo = await renderThemesSection({
+      canEdit: true,
+      deleteAction: '/admin/plugins/theme-editor/delete',
+      themes: [{
+        id: 'website',
+        name: 'Website',
+        source: 'Example-Org/website@main',
+        status: 'GitHub',
+        editorHref: '/admin/plugins/theme-editor/editor?theme=website',
+        canDelete: true,
+        repo: { owner: 'Example-Org', repo: 'website', branch: 'main', path: '' },
+      }],
+    });
+    expect(withRepo).toContain('action="/admin/plugins/theme-editor/delete"');
+    expect(withRepo).toContain('name="confirm_id"');
+    expect(withRepo).toContain('data-confirm');
+    // A theme that came from a repository can be cloned again; the dialog says
+    // so rather than implying the files are the only copy.
+    expect(withRepo).toContain('can be cloned again');
+
+    const bucketOnly = await renderThemesSection({
+      canEdit: true,
+      deleteAction: '/admin/plugins/theme-editor/delete',
+      themes: [{
+        id: 'local-theme',
+        name: 'Local Theme',
+        source: 'Bucket local-theme/',
+        status: 'Bucket',
+        editorHref: '/admin/plugins/theme-editor/editor?theme=local-theme',
+        canDelete: true,
+        repo: null,
+      }],
+    });
+    expect(bucketOnly).toContain('no repository to clone it back from');
+
+    // A read-only user is not shown a destructive action they cannot take.
+    const readOnly = await renderThemesSection({
+      canEdit: false,
+      deleteAction: '/admin/plugins/theme-editor/delete',
+      themes: [{ id: 'website', name: 'Website', canDelete: true, editorHref: '#' }],
+    });
+    expect(readOnly).not.toContain('Delete theme');
   });
 
   it('does not open a theme that is not in the registry', async () => {
@@ -653,6 +715,67 @@ describe('theme editor routes', () => {
     expect(html).toContain('name="field:/_blocks/0/body/en"');
   });
 
+  it('serves one section\'s bindings on their own, so the editor need not reload', async () => {
+    // The browser cannot compose this panel: the bindings come from the
+    // theme's own {% schema %}. Without this endpoint, switching to Schema or
+    // moving between sections while in it could only be done by loading the
+    // whole editor again, throwing away the client-side selection.
+    const fixture = page({
+      lect: {
+        _type: 'home',
+        _blocks: [{ _id: 'hero-1', _type: 'hero', _weight: 10, theme: 'cream', title: { en: 'Hello' } }],
+      },
+    });
+    mockCms(({ url }) => {
+      if (url.pathname === '/__cms/content-meta') return contentMeta();
+      if (url.pathname === '/__cms/pages/12') return { page: fixture };
+      if (url.pathname === '/__cms/pages') {
+        return { pages: url.searchParams.get('page_type') === 'home' ? [fixture] : [], total: 1 };
+      }
+      throw new Error(`Unexpected call ${url}`);
+    });
+
+    const response = await plugin.fetch(
+      adminRequest('/__plugin/admin/section-schema?theme=example-theme&template=page'
+        + '&page_id=12&language=en&section=hero&block=0'),
+      env(),
+    );
+    expect(response.status).toBe(200);
+    const data = await response.json() as {
+      ok: boolean; section: string; block: number | null; schemaName: string;
+      missingBlock: boolean; canEditSchema: boolean;
+      schemaSettings: Array<{ id: string; binding: string; value: string; inputName: string }>;
+    };
+
+    // Identical in shape to what the page is rendered from, so the client
+    // draws the same panel the server would have.
+    expect(data).toMatchObject({ ok: true, section: 'hero', block: 0, schemaName: 'Hero', missingBlock: false });
+    expect(data.schemaSettings[0]).toMatchObject({
+      id: 'theme',
+      binding: '{{ page.blocks[0].theme }}',
+      inputName: 'setting:theme',
+      value: 'cream',
+    });
+
+    // A section the page carries no block for still has bindings — that is the
+    // case that opens on this panel rather than on an empty values form.
+    const noBlock = await plugin.fetch(
+      adminRequest('/__plugin/admin/section-schema?theme=example-theme&template=page'
+        + '&page_id=12&language=en&section=cta'),
+      env(),
+    );
+    expect(await noBlock.json()).toMatchObject({ ok: true, section: 'cta', missingBlock: true });
+
+    // A section the template does not declare is refused rather than answered
+    // with an empty panel that would look like a section with no settings.
+    const unknown = await plugin.fetch(
+      adminRequest('/__plugin/admin/section-schema?theme=example-theme&template=page'
+        + '&page_id=12&language=en&section=not-a-section'),
+      env(),
+    );
+    expect(unknown.status).toBe(404);
+  });
+
   it('leaves the values mode untouched when no schema is asked for', async () => {
     const fixture = page();
     mockCms(({ url }) => {
@@ -690,7 +813,6 @@ describe('theme editor routes', () => {
   });
 
   it('saves a schema setting as the template binding and renders through it', async () => {
-    const overrides = kv();
     mockCms(({ url }) => {
       if (url.pathname === '/__cms/content-meta') return contentMeta();
       throw new Error(`Unexpected call ${url}`);
@@ -712,7 +834,7 @@ describe('theme editor routes', () => {
           'setting:nonsense': 'ignored',
         }),
       }),
-      env({ THEME_OVERRIDES: overrides }),
+      env(),
     );
     expect(response.status).toBe(200);
     const payload = await response.json() as {
@@ -744,7 +866,7 @@ describe('theme editor routes', () => {
           'setting:theme': '{{ page.blocks[0].theme }}',
         }),
       }),
-      env({ THEME_OVERRIDES: overrides }),
+      env(),
     );
     expect((await unchanged.json() as { settings: unknown }).settings).toEqual({});
 
@@ -769,22 +891,28 @@ describe('theme editor routes', () => {
   });
 
   it('exposes the override layer for the tooling that writes the theme', async () => {
-    const overrides = kv({
-      [await overrideKey('example-theme', 'page')]: JSON.stringify({
-        hidden: ['cta'],
-        settings: { hero: { title: '{{ page.blocks[0].eyebrow }}' } },
-      }),
-      // A template with nothing overridden is left out entirely, so the writer
-      // has no reason to touch its file.
-      [await overrideKey('example-theme', 'message')]: JSON.stringify({
-        hidden: [],
-        settings: {},
-      }),
+    // The override layer lives on the CMS, so these need its stub installed
+    // even though they ask it nothing else.
+    mockCms(({ url }) => {
+      throw new Error(`Unexpected call ${url}`);
+    });
+    // One key holds every template's overrides for a theme, so reading them
+    // all is a point read rather than a scan.
+    state = cmsState({
+      [themeOverridesKey('example-theme')]: {
+        page: {
+          hidden: ['cta'],
+          settings: { hero: { title: '{{ page.blocks[0].eyebrow }}' } },
+        },
+        // A template with nothing overridden is left out entirely, so the
+        // writer has no reason to touch its file.
+        message: { hidden: [], settings: {} },
+      },
     });
 
     const response = await plugin.fetch(
       adminRequest('/__plugin/admin/overrides?theme=example-theme'),
-      env({ THEME_OVERRIDES: overrides }),
+      env(),
     );
     expect(response.status).toBe(200);
     expect(await response.json()).toEqual({
@@ -802,10 +930,73 @@ describe('theme editor routes', () => {
         headers: { 'content-type': 'application/x-www-form-urlencoded' },
         body: new URLSearchParams({ template: 'page' }),
       }),
-      env({ THEME_OVERRIDES: overrides }),
+      env(),
     );
     expect(await cleared.json()).toMatchObject({ ok: true, template: 'page' });
-    expect(overrides.store.has(await overrideKey('example-theme', 'page'))).toBe(false);
+    // Nothing left to say, so the key goes rather than lingering as an empty
+    // record against the per-plugin key budget.
+    expect(state.store.has(themeOverridesKey('example-theme'))).toBe(false);
+  });
+
+  it('adopts pending edits left in the pre-migration namespace', async () => {
+    // Installs predating the move to the host keep their edits: the first read
+    // collapses them into the host's single per-theme record and drains the
+    // namespace, so it can be unbound once empty.
+    mockCms(({ url }) => {
+      throw new Error(`Unexpected call ${url}`);
+    });
+    const legacy = kv({
+      [await overrideKey('example-theme', 'page')]: JSON.stringify({
+        hidden: ['cta'],
+        settings: {},
+      }),
+      [await overrideKey('example-theme', 'message')]: JSON.stringify({
+        hidden: [],
+        settings: { hero: { title: '{{ page.title }}' } },
+      }),
+    });
+
+    const response = await plugin.fetch(
+      adminRequest('/__plugin/admin/overrides?theme=example-theme'),
+      env({ THEME_OVERRIDES: legacy }),
+    );
+    expect(await response.json()).toMatchObject({
+      templates: {
+        page: { hidden: ['cta'] },
+        message: { settings: { hero: { title: '{{ page.title }}' } } },
+      },
+    });
+
+    // Both templates now live under one key, and the old entries are gone.
+    expect(JSON.parse(state.store.get(themeOverridesKey('example-theme')) as string))
+      .toEqual({
+        page: { hidden: ['cta'], settings: {} },
+        message: { hidden: [], settings: { hero: { title: '{{ page.title }}' } } },
+      });
+    expect(legacy.store.size).toBe(0);
+  });
+
+  it('keeps pending edits when the host will not take the migration', async () => {
+    // The edits still exist and must stay usable; a failed hand-over leaves
+    // them where they are rather than dropping them between the two stores.
+    mockCms(({ url }) => {
+      throw new Error(`Unexpected call ${url}`);
+    });
+    state.handle = (url: URL, method: string) => {
+      if (!url.pathname.startsWith('/__cms/state')) return null;
+      return method === 'GET'
+        ? Response.json({ error: 'not_found' }, { status: 404 })
+        : Response.json({ error: 'unavailable' }, { status: 503 });
+    };
+    const key = await overrideKey('example-theme', 'page');
+    const legacy = kv({ [key]: JSON.stringify({ hidden: ['cta'], settings: {} }) });
+
+    const response = await plugin.fetch(
+      adminRequest('/__plugin/admin/overrides?theme=example-theme'),
+      env({ THEME_OVERRIDES: legacy }),
+    );
+    expect(await response.json()).toMatchObject({ templates: { page: { hidden: ['cta'] } } });
+    expect(legacy.store.has(key)).toBe(true);
   });
 
   it('refuses to clear a template the theme does not have', async () => {
@@ -815,7 +1006,7 @@ describe('theme editor routes', () => {
         headers: { 'content-type': 'application/x-www-form-urlencoded' },
         body: new URLSearchParams({ template: 'not-a-template' }),
       }),
-      env({ THEME_OVERRIDES: kv() }),
+      env(),
     );
     expect(response.status).toBe(404);
   });
@@ -831,7 +1022,7 @@ describe('theme editor routes', () => {
         },
         { id: '42', role: 'viewer', permissions: ['theme-editor:view'] },
       ),
-      env({ THEME_OVERRIDES: kv() }),
+      env(),
     );
     expect(response.status).toBe(403);
   });
@@ -845,14 +1036,13 @@ describe('theme editor routes', () => {
       }
       throw new Error(`Unexpected call ${url}`);
     });
+    state = cmsState({
+      [themeOverridesKey('example-theme')]: { page: { hidden: ['hero'], settings: {} } },
+    });
 
     const response = await plugin.fetch(
       adminRequest('/__plugin/admin/editor?theme=example-theme&template=page&page_id=12&language=en'),
-      env({
-        THEME_OVERRIDES: kv({
-          [await overrideKey('example-theme', 'page')]: JSON.stringify({ hidden: ['hero'] }),
-        }),
-      }),
+      env(),
     );
     expect(response.status).toBe(200);
     const data = await response.json() as Record<string, unknown>;
@@ -926,7 +1116,7 @@ describe('theme editor routes', () => {
 
     const response = await plugin.fetch(
       adminRequest('/__plugin/admin/editor?theme=example-theme&template=page&page_id=12&language=en'),
-      env({ THEME_OVERRIDES: kv() }),
+      env(),
     );
     const data = await response.json() as Record<string, unknown>;
     const sections = data.sections as Array<{ key: string; hasBlock: boolean; href: string }>;
@@ -958,7 +1148,7 @@ describe('theme editor routes', () => {
 
     const response = await plugin.fetch(
       adminRequest('/__plugin/admin/editor?theme=example-theme&template=page&page_id=12&language=en&section=cta'),
-      env({ THEME_OVERRIDES: kv() }),
+      env(),
     );
     const data = await response.json() as Record<string, unknown>;
     expect(data.selectedSection).toBe('cta');
@@ -998,7 +1188,7 @@ describe('theme editor routes', () => {
 
     const response = await plugin.fetch(
       adminRequest('/__plugin/admin/editor?theme=example-theme&template=page&page_id=12&language=en&section=hero'),
-      env({ THEME_OVERRIDES: kv() }),
+      env(),
     );
     const data = await response.json() as Record<string, unknown>;
     expect(data.selectedSection).toBe('hero');
@@ -1023,7 +1213,7 @@ describe('theme editor routes', () => {
 
     const response = await plugin.fetch(
       adminRequest('/__plugin/admin/editor?theme=example-theme&template=news-article&page_id=12&language=en'),
-      env({ THEME_OVERRIDES: kv() }),
+      env(),
     );
     const data = await response.json() as Record<string, unknown>;
     const sections = data.sections as Array<{ key: string; hidden: boolean; hasBlock: boolean }>;
@@ -1048,14 +1238,13 @@ describe('theme editor routes', () => {
       if (url.pathname === '/__cms/pages') return { pages: [], total: 0 };
       throw new Error(`Unexpected call ${url}`);
     });
+    state = cmsState({
+      [themeOverridesKey('example-theme')]: { page: { hidden: ['cta'], settings: {} } },
+    });
 
     const response = await plugin.fetch(
       adminRequest('/__plugin/admin/preview/data?theme=example-theme&template=page&page_id=12&language=en&block=0'),
-      env({
-        THEME_OVERRIDES: kv({
-          [await overrideKey('example-theme', 'page')]: JSON.stringify({ hidden: ['cta'] }),
-        }),
-      }),
+      env(),
     );
     expect(response.status).toBe(200);
     const data = await response.json() as {
@@ -1093,7 +1282,6 @@ describe('theme editor routes', () => {
 
   it('hides a template section for every page the template renders', async () => {
     const fixture = page();
-    const overrides = kv();
     mockCms(({ url }) => {
       if (url.pathname === '/__cms/content-meta') return contentMeta();
       if (url.pathname === '/__cms/pages/12') return { page: fixture };
@@ -1116,21 +1304,22 @@ describe('theme editor routes', () => {
           hidden: '1',
         }),
       }),
-      env({ THEME_OVERRIDES: overrides }),
+      env(),
     );
     expect(toggle.status).toBe(302);
     expect(toggle.headers.get('location')).toContain('flash=Hidden%20hero');
     // A block in the URL makes the client open the settings panel over the
     // list the toggle was used from, so visibility changes must not carry one.
     expect(toggle.headers.get('location')).not.toContain('block=');
-    expect([...overrides.store.values()]).toEqual([JSON.stringify({ hidden: ['hero'], settings: {} })]);
+    expect(JSON.parse(state.store.get(themeOverridesKey('example-theme')) as string))
+      .toEqual({ page: { hidden: ['hero'], settings: {} } });
 
     // Stored per template, so the section is gone from the compiled order for
     // any page rendered through it — not just the page that was open. The
     // stored set is what the data route hands the browser renderer.
     const data = await plugin.fetch(
       adminRequest('/__plugin/admin/preview/data?theme=example-theme&template=page&page_id=12&language=en'),
-      env({ THEME_OVERRIDES: overrides }),
+      env(),
     );
     expect((await data.json() as { hidden: string[] }).hidden).toEqual(['hero']);
 
@@ -1140,7 +1329,6 @@ describe('theme editor routes', () => {
   });
 
   it('answers a toggle with the new hidden set so nothing has to reload', async () => {
-    const overrides = kv();
     mockCms(({ url }) => {
       if (url.pathname === '/__cms/content-meta') return contentMeta();
       throw new Error(`Unexpected call ${url}`);
@@ -1161,7 +1349,7 @@ describe('theme editor routes', () => {
           hidden,
         }),
       }),
-      env({ THEME_OVERRIDES: overrides }),
+      env(),
     );
 
     // No redirect: the editor page updates the row and redraws the frame from
@@ -1182,6 +1370,13 @@ describe('theme editor routes', () => {
       if (url.pathname === '/__cms/content-meta') return contentMeta();
       throw new Error(`Unexpected call ${url}`);
     });
+    // The CMS refuses to store the change, so the toggle did not happen.
+    state.handle = (url: URL, method: string) => {
+      if (!url.pathname.startsWith('/__cms/state')) return null;
+      return method === 'GET'
+        ? Response.json({ error: 'not_found' }, { status: 404 })
+        : Response.json({ error: 'unavailable' }, { status: 503 });
+    };
 
     const response = await plugin.fetch(
       adminRequest('/__plugin/admin/visibility', {
@@ -1204,7 +1399,6 @@ describe('theme editor routes', () => {
   });
 
   it('refuses section keys the selected template does not declare', async () => {
-    const overrides = kv();
     mockCms(({ url }) => {
       if (url.pathname === '/__cms/content-meta') return contentMeta();
       throw new Error(`Unexpected call ${url}`);
@@ -1221,17 +1415,25 @@ describe('theme editor routes', () => {
           hidden: '1',
         }),
       }),
-      env({ THEME_OVERRIDES: overrides }),
+      env(),
     );
     expect(response.status).toBe(404);
-    expect(overrides.store.size).toBe(0);
+    expect(state.store.size).toBe(0);
   });
 
-  it('reports the missing override namespace instead of silently dropping the toggle', async () => {
+  it('reports a store that will not take the change instead of dropping it', async () => {
     mockCms(({ url }) => {
       if (url.pathname === '/__cms/content-meta') return contentMeta();
       throw new Error(`Unexpected call ${url}`);
     });
+    // The CMS holds the override layer, so a host that refuses the write means
+    // the toggle did not land — and must say so rather than looking like it did.
+    state.handle = (url: URL, method: string) => {
+      if (!url.pathname.startsWith('/__cms/state')) return null;
+      return method === 'GET'
+        ? Response.json({ error: 'not_found' }, { status: 404 })
+        : Response.json({ error: 'unavailable' }, { status: 503 });
+    };
 
     const response = await plugin.fetch(
       adminRequest('/__plugin/admin/visibility', {
@@ -1247,7 +1449,7 @@ describe('theme editor routes', () => {
       env(),
     );
     expect(response.status).toBe(302);
-    expect(decodeURIComponent(response.headers.get('location') ?? '')).toContain('THEME_OVERRIDES');
+    expect(decodeURIComponent(response.headers.get('location') ?? '')).toContain('could not be reached');
   });
 
   it('denies section visibility changes without write access', async () => {
@@ -1261,7 +1463,7 @@ describe('theme editor routes', () => {
         },
         { id: '42', role: 'viewer', permissions: ['theme-editor:view'] },
       ),
-      env({ THEME_OVERRIDES: kv() }),
+      env(),
     );
     expect(response.status).toBe(403);
   });

@@ -22,25 +22,16 @@ GITHUB_APP_SLUG = "eventuai-theme-editor"
 GITHUB_APP_CLIENT_ID = "Iv23li3rHFYFrjmqLsk5"
 
 
-# Section visibility is a per-template decision, so those overrides need their
-# own writable store. Local
-# `wrangler dev` runs against Miniflare's on-disk KV and ignores this id;
-# provision a real namespace before deploying with:
-#   npm run kv:setup -- --binding=THEME_OVERRIDES
+# LEGACY, read-once. Pending editor changes now live on the CMS that owns them
+# (plugin state key `theme.overrides.<theme id>`): they are that host's content
+# decisions, and a read-modify-write like this needs D1's strong consistency
+# rather than KV's eventual consistency, which made a toggle visibly bounce
+# back. Entries still here are adopted the first time a theme is opened and
+# deleted from this namespace, so it drains on its own. Unbind it once
+# `wrangler kv key list` shows it empty.
 [[kv_namespaces]]
 binding = "THEME_OVERRIDES"
 id = "5881153cac594025ac7f2e19bd8ffadb"
-
-# LEGACY, read-only. GitHub App installation metadata now lives on the CMS that
-# owns it (plugin state key `github.connection`), because a record kept here
-# outlives the host it describes and is invisible to that host's admins. This
-# namespace is still read once per tenant so pre-migration installs keep
-# working; each such read writes the record through to the host, so the
-# namespace drains as tenants use the editor. Unbind it once every connected
-# CMS shows GitHub as connected.
-[[kv_namespaces]]
-binding = "GITHUB_CONNECTIONS"
-id = "fc06bde2f4524f8ab53209cb81866ab3"
 
 # The theme library. The bucket is the root: every top-level folder is a theme,
 # so `example-theme/templates/page.json` is that theme's page template.

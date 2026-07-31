@@ -111,6 +111,32 @@ export function themePrefix(scope: ThemeScope): string {
   return `${TENANT_KEY_PREFIX}/${scope.tenantRef}/`;
 }
 
+/**
+ * Removes every object belonging to one theme, and nothing else.
+ *
+ * The prefix is rebuilt from the scope rather than taken from a caller, so a
+ * delete can only ever reach inside the tenant that asked for it — the same
+ * invariant `R2ThemeStore` keeps for reads and writes. Returns how many objects
+ * were removed, which is what tells an empty theme id from a real one.
+ */
+export async function deleteBucketTheme(
+  bucket: R2Bucket,
+  themeId: string,
+  scope: ThemeScope = {},
+): Promise<number> {
+  const prefix = `${themePrefix(scope)}${themeId}/`;
+  let removed = 0;
+  // Re-listed each round rather than paged through: delete invalidates the
+  // cursor, and the listing shrinks as the deletes land, so this terminates.
+  for (;;) {
+    const page = await bucket.list({ prefix, limit: 1000 });
+    const keys = page.objects.map((object) => object.key);
+    if (keys.length === 0) return removed;
+    await bucket.delete(keys);
+    removed += keys.length;
+  }
+}
+
 /** Theme folders visible to one tenant. */
 export async function bucketThemeIds(bucket: R2Bucket, scope: ThemeScope = {}): Promise<string[]> {
   const prefix = themePrefix(scope);

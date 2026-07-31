@@ -1,7 +1,8 @@
 import { readFile } from 'node:fs/promises';
 import { fileURLToPath } from 'node:url';
 import { afterEach, describe, expect, it, vi } from 'vitest';
-import { clearTenantCache, tenantRef } from '@lionrockjs/worker-cms-plugin';
+import { clearPluginStateCache, clearTenantCache } from '@lionrockjs/worker-cms-plugin';
+import { cmsState, themeOverridesKey } from './cms-state';
 import worker from '../src/index';
 import { parseRepo, repoFromUrl } from '../src/theme/github';
 import type { PluginEnv } from '../src/types';
@@ -127,13 +128,10 @@ function gitHub(files: Record<string, string> = {}, options: {
     const method = init.method ?? 'GET';
     const body = init.body ? JSON.parse(String(init.body)) : undefined;
 
-    // The connected installation is held by the CMS, so resolving a token asks
-    // the host first. These tests cover the personal-token path, where the
-    // host legitimately has nothing stored. Not recorded in `calls`, which
-    // exists to assert what was sent to GitHub.
-    if (url.pathname.startsWith('/__cms/state/')) {
-      return Response.json({ error: 'not_found' }, { status: 404 });
-    }
+    // The CMS holds both the connected installation and the override layer.
+    // Not recorded in `calls`, which exists to assert what was sent to GitHub.
+    const hosted = state.handle(url, method, body);
+    if (hosted) return hosted;
 
     calls.push({ method, path: url.pathname, body });
     if (url.hostname !== 'api.github.com') throw new Error(`Unexpected host ${url.hostname}`);
@@ -188,9 +186,14 @@ function gitHub(files: Record<string, string> = {}, options: {
   };
 }
 
+/** The host's plugin-state store: the GitHub connection and pending edits. */
+let state = cmsState();
+
 afterEach(() => {
   vi.unstubAllGlobals();
   clearTenantCache();
+  clearPluginStateCache();
+  state = cmsState();
 });
 
 describe('GitHub theme source', () => {
@@ -284,17 +287,18 @@ describe('GitHub theme source', () => {
 
   it('publishes the override layer as one commit, then clears it', async () => {
     const THEMES = bucket(repoTheme());
-    const THEME_OVERRIDES = kv({
-      [`sections:${await tenantRef('https://cms.example.com')}:website:page`]: JSON.stringify({
-        hidden: ['cta'],
-        settings: { hero: { title: '{{ page.blocks[0].eyebrow }}' } },
-      }),
+    state = cmsState({
+      [themeOverridesKey('website')]: {
+        page: {          hidden: ['cta'],
+          settings: { hero: { title: '{{ page.blocks[0].eyebrow }}' } },
+        },
+      },
     });
     const api = gitHub({ 'views/templates/page.json': PAGE_JSON });
 
     const response = await plugin.fetch(
       adminRequest('/__plugin/admin/publish', { theme: 'website' }),
-      env({ THEMES, THEME_OVERRIDES, GITHUB_TOKEN: TOKEN }),
+      env({ THEMES, GITHUB_TOKEN: TOKEN }),
     );
     expect(response.status).toBe(200);
     expect(await response.json()).toMatchObject({ ok: true, pushed: true, commit: 'commit-abcdef1234' });
@@ -313,7 +317,7 @@ describe('GitHub theme source', () => {
     expect(message).toContain('hero.title');
 
     expect(JSON.parse(THEMES.store.get('website/templates/page.json') as string).order).toEqual(['hero']);
-    expect(THEME_OVERRIDES.store.size).toBe(0);
+    expect(state.store.has(themeOverridesKey('website'))).toBe(false);
   });
 
   it('publishes nothing when the commit fails, so the edit can be retried', async () => {
@@ -321,60 +325,63 @@ describe('GitHub theme source', () => {
     // template the override yields no changes, so a retry would publish nothing
     // and the repository would never receive it.
     const THEMES = bucket(repoTheme());
-    const key = `sections:${await tenantRef('https://cms.example.com')}:website:page`;
-    const THEME_OVERRIDES = kv({ [key]: JSON.stringify({ hidden: ['cta'], settings: {} }) });
+    state = cmsState({
+      [themeOverridesKey('website')]: { page: { hidden: ['cta'], settings: {} } },
+    });
     gitHub({ 'views/templates/page.json': PAGE_JSON }, { failCommit: true });
 
     const response = await plugin.fetch(
       adminRequest('/__plugin/admin/publish', { theme: 'website' }),
-      env({ THEMES, THEME_OVERRIDES, GITHUB_TOKEN: TOKEN }),
+      env({ THEMES, GITHUB_TOKEN: TOKEN }),
     );
     expect(response.status).toBe(502);
     expect((await response.json() as { message: string }).message).toContain('Nothing was published');
 
     expect(JSON.parse(THEMES.store.get('website/templates/page.json') as string).order)
       .toEqual(['hero', 'cta']);
-    expect(THEME_OVERRIDES.store.has(key)).toBe(true);
+    expect(state.store.has(themeOverridesKey('website'))).toBe(true);
   });
 
   it('makes no commit when the branch already says what the templates say', async () => {
     // A retry after a partial failure recomputes the same content. Committing
     // an identical tree would add an empty commit for every attempt.
     const THEMES = bucket(repoTheme());
-    const THEME_OVERRIDES = kv({
-      [`sections:${await tenantRef('https://cms.example.com')}:website:page`]: JSON.stringify({
-        hidden: ['cta'],
-        settings: {},
-      }),
+    state = cmsState({
+      [themeOverridesKey('website')]: {
+        page: {          hidden: ['cta'],
+          settings: {},
+        },
+      },
     });
     const api = gitHub({ 'views/templates/page.json': PAGE_JSON }, { treeUnchanged: true });
 
     const response = await plugin.fetch(
       adminRequest('/__plugin/admin/publish', { theme: 'website' }),
-      env({ THEMES, THEME_OVERRIDES, GITHUB_TOKEN: TOKEN }),
+      env({ THEMES, GITHUB_TOKEN: TOKEN }),
     );
     expect(response.status).toBe(200);
     expect(api.committed).toBeNull();
     expect(api.calls.some((call) => call.method === 'PATCH')).toBe(false);
     // Still a successful publish: the repository is already correct.
-    expect(THEME_OVERRIDES.store.size).toBe(0);
+    expect(state.store.has(themeOverridesKey('website'))).toBe(false);
   });
 
   it('refuses to push a theme whose editor changes are not published yet', async () => {
     // Push commits what the bucket holds. With edits still in the override
     // layer that is the theme WITHOUT them, and it would look like it worked.
     const THEMES = bucket(repoTheme());
-    const THEME_OVERRIDES = kv({
-      [`sections:${await tenantRef('https://cms.example.com')}:website:page`]: JSON.stringify({
-        hidden: ['cta'],
-        settings: {},
-      }),
+    state = cmsState({
+      [themeOverridesKey('website')]: {
+        page: {          hidden: ['cta'],
+          settings: {},
+        },
+      },
     });
     const api = gitHub({ 'views/templates/page.json': PAGE_JSON });
 
     const response = await plugin.fetch(
       adminRequest('/__plugin/admin/github/push', { theme: 'website' }),
-      env({ THEMES, THEME_OVERRIDES, GITHUB_TOKEN: TOKEN }),
+      env({ THEMES, GITHUB_TOKEN: TOKEN }),
     );
     expect(response.status).toBe(400);
     expect((await response.json() as { message: string }).message).toContain('Publish first');

@@ -1,17 +1,26 @@
+import { CmsNotConfiguredError, pluginState } from '@lionrockjs/worker-cms-plugin';
+import { PLUGIN_ID } from '../constants';
 import type { PluginEnv } from '../types';
 
 /**
- * Per-template section visibility.
+ * Per-template section visibility and setting bindings.
  *
  * Hiding a section is a theme-template decision rather than page content, so it
  * cannot live in a page's `lect`; and the theme bundle is a read-only asset
  * subtree that `npm run theme:sync` regenerates from the theme repository, so
  * the template file cannot be written back either. This is the writable layer
- * between the two.
+ * between the two — a buffer of pending edits that `publish` folds into the
+ * theme and then empties.
  *
  * Hidden keys are stored instead of a copy of the template's `order` array: a
  * theme author who adds a section later gets it shown, rather than silently
  * losing it to a stale snapshot taken when someone first hid something.
+ *
+ * The record lives on the CMS that owns it (plugin state), not in this
+ * Worker's KV. One plugin Worker serves many hosts, so a copy kept here would
+ * outlive the host it describes and stay invisible to its admins — and D1's
+ * strong consistency is what a read-modify-write like this needs, which KV's
+ * eventual consistency could not give it.
  */
 export interface TemplateOverrides {
   /** Section keys dropped from the template's compiled `order`. */
@@ -20,18 +29,35 @@ export interface TemplateOverrides {
   settings: Record<string, Record<string, string>>;
 }
 
+/** Every template's overrides for one theme — what a single state key holds. */
+export type ThemeOverrides = Record<string, TemplateOverrides>;
+
+/**
+ * One key per theme rather than per template: it makes reading them all a
+ * point read instead of a scan, keeps a read-modify-write to a single row, and
+ * bounds the key count by the number of themes rather than themes × templates.
+ */
+function stateKey(themeId: string): string {
+  return `theme.overrides.${themeId}`;
+}
+
+/** Pre-migration KV key: `sections:<tenant ref>:<theme>:<template>`. */
+function legacyKey(env: PluginEnv, themeId: string, templateId: string): string {
+  const ref = env.CMS_TENANT_REF?.trim() ?? '';
+  return ref ? `sections:${ref}:${themeId}:${templateId}` : '';
+}
+
 export class MissingOverrideStoreError extends Error {
   constructor() {
-    super('Section visibility needs the THEME_OVERRIDES KV namespace. '
-      + 'Provision it with `npm run kv:setup -- --binding=THEME_OVERRIDES`.');
+    super('Theme editor changes are stored on this CMS, which could not be reached.');
     this.name = 'MissingOverrideStoreError';
   }
 }
 
 /**
- * Raised when the request carries no resolved tenant. Distinct from a missing
- * store because the fix is different: this one is a connection problem, not a
- * provisioning one.
+ * Raised when the request carries no CMS connection to store against. Distinct
+ * from an unreachable store because the fix is different: this one means the
+ * plugin is not connected to the host at all.
  */
 export class UnknownTenantError extends Error {
   constructor() {
@@ -42,17 +68,107 @@ export class UnknownTenantError extends Error {
 }
 
 /**
- * Visible-by-default: an unprovisioned or unreachable store must not blank out
- * a preview, so reads degrade to "nothing hidden" while writes fail loudly.
+ * Overrides are read right after they are written and must never be served
+ * stale, so nothing is cached: a Hide toggle handled by one isolate has to be
+ * visible to the next request whichever isolate takes it.
  */
+function store(env: PluginEnv) {
+  return pluginState(env, PLUGIN_ID, { ttlMs: 0 });
+}
+
+/**
+ * Visible-by-default: an unreachable store must not blank out a preview, so
+ * reads degrade to "nothing hidden" while writes fail loudly. This only
+ * affects the editor's own preview — the public site renders from the
+ * published theme files, not from this layer.
+ */
+async function readTheme(env: PluginEnv, themeId: string): Promise<ThemeOverrides> {
+  try {
+    return parseThemeOverrides(await store(env).get<unknown>(stateKey(themeId)));
+  } catch (error) {
+    console.warn(`Could not read theme overrides for ${themeId}:`, error);
+    return {};
+  }
+}
+
+async function writeTheme(env: PluginEnv, themeId: string, value: ThemeOverrides): Promise<void> {
+  const state = writableStore(env);
+  // A template entry that hides nothing and rebinds nothing says nothing, so
+  // it is not stored — otherwise clearing the last real override would leave
+  // the theme with a record that only looks like it has pending edits.
+  const pruned = Object.fromEntries(Object.entries(value).filter(([, entry]) =>
+    entry.hidden.length > 0 || Object.keys(entry.settings).length > 0));
+  try {
+    // An empty record is the absence of overrides, not an override to nothing —
+    // and dropping the key keeps a tenant well inside the per-plugin key cap.
+    if (Object.keys(pruned).length === 0) await state.delete(stateKey(themeId));
+    else await state.put(stateKey(themeId), pruned);
+  } catch (error) {
+    // A store that cannot take the write is reported as such, so the editor
+    // says the change did not land rather than failing as an unhandled error.
+    console.warn(`Could not store theme overrides for ${themeId}:`, error);
+    throw new MissingOverrideStoreError();
+  }
+}
+
+/** The store a write must use, or the reason there is not one. */
+function writableStore(env: PluginEnv) {
+  try {
+    return store(env);
+  } catch (error) {
+    if (error instanceof CmsNotConfiguredError) throw new UnknownTenantError();
+    throw error;
+  }
+}
+
+/**
+ * Adopts anything still in the pre-migration KV namespace for the given
+ * templates, so installs predating the move keep their pending edits. Migrated
+ * entries are written to the host and dropped from KV, which drains the
+ * namespace as themes are opened; it can be unbound once empty.
+ */
+async function adoptLegacy(
+  env: PluginEnv,
+  themeId: string,
+  record: ThemeOverrides,
+  templateIds: string[],
+): Promise<ThemeOverrides> {
+  if (!env.THEME_OVERRIDES) return record;
+  const pending = templateIds.filter((templateId) => !(templateId in record));
+  if (pending.length === 0) return record;
+
+  const adopted: ThemeOverrides = { ...record };
+  const migrated: string[] = [];
+  for (const templateId of pending) {
+    const key = legacyKey(env, themeId, templateId);
+    if (!key) continue;
+    const raw = await env.THEME_OVERRIDES.get(key).catch(() => null);
+    const parsed = parseOverrides(raw);
+    if (parsed.hidden.length === 0 && Object.keys(parsed.settings).length === 0) continue;
+    adopted[templateId] = parsed;
+    migrated.push(key);
+  }
+  if (migrated.length === 0) return record;
+
+  // Only once the host has taken them: a failed write leaves the edits where
+  // they are rather than losing them between the two stores.
+  try {
+    await writeTheme(env, themeId, adopted);
+  } catch (error) {
+    console.warn(`Could not migrate theme overrides for ${themeId} to the CMS:`, error);
+    return adopted;
+  }
+  for (const key of migrated) await env.THEME_OVERRIDES.delete(key).catch(() => {});
+  return adopted;
+}
+
 export async function templateOverrides(
   env: PluginEnv,
   themeId: string,
   templateId: string,
 ): Promise<TemplateOverrides> {
-  const key = overrideKey(env, themeId, templateId);
-  if (!env.THEME_OVERRIDES || !key) return { hidden: [], settings: {} };
-  return parseOverrides(await env.THEME_OVERRIDES.get(key));
+  const record = await adoptLegacy(env, themeId, await readTheme(env, themeId), [templateId]);
+  return record[templateId] ?? { hidden: [], settings: {} };
 }
 
 export async function hiddenSections(
@@ -63,16 +179,21 @@ export async function hiddenSections(
   return new Set((await templateOverrides(env, themeId, templateId)).hidden);
 }
 
-/** Every template's overrides, for tooling that writes them into the theme. */
+/**
+ * Every template's overrides, for tooling that writes them into the theme.
+ * One read for the whole theme, and templates the theme no longer declares are
+ * left out — the theme, not this layer, decides what templates exist.
+ */
 export async function allTemplateOverrides(
   env: PluginEnv,
   themeId: string,
   templateIds: string[],
-): Promise<Record<string, TemplateOverrides>> {
-  const entries = await Promise.all(templateIds.map(async (templateId) =>
-    [templateId, await templateOverrides(env, themeId, templateId)] as const));
-  return Object.fromEntries(entries.filter(([, value]) =>
-    value.hidden.length > 0 || Object.keys(value.settings).length > 0));
+): Promise<ThemeOverrides> {
+  const record = await adoptLegacy(env, themeId, await readTheme(env, themeId), templateIds);
+  const declared = new Set(templateIds);
+  return Object.fromEntries(Object.entries(record).filter(([templateId, value]) =>
+    declared.has(templateId)
+    && (value.hidden.length > 0 || Object.keys(value.settings).length > 0)));
 }
 
 /**
@@ -84,15 +205,24 @@ export async function clearTemplateOverrides(
   themeId: string,
   templateId: string,
 ): Promise<void> {
-  await env.THEME_OVERRIDES!.delete(writableKey(env, themeId, templateId));
+  const record = await readTheme(env, themeId);
+  if (!(templateId in record)) return;
+  delete record[templateId];
+  await writeTheme(env, themeId, record);
 }
 
-/** The key a write must use, or the reason it cannot be written. */
-function writableKey(env: PluginEnv, themeId: string, templateId: string): string {
-  if (!env.THEME_OVERRIDES) throw new MissingOverrideStoreError();
-  const key = overrideKey(env, themeId, templateId);
-  if (!key) throw new UnknownTenantError();
-  return key;
+/**
+ * Drops every override belonging to a theme, for when the theme itself goes.
+ *
+ * Overrides are keyed by theme id, so leaving them behind would mean a theme
+ * later cloned under the same id silently inheriting the deleted one's hidden
+ * sections and rebound settings.
+ */
+export async function clearThemeOverrides(env: PluginEnv, themeId: string): Promise<number> {
+  const record = await readTheme(env, themeId);
+  const templates = Object.keys(record).length;
+  await writeTheme(env, themeId, {});
+  return templates;
 }
 
 /**
@@ -107,15 +237,15 @@ export async function setSectionSettings(
   sectionKey: string,
   settings: Record<string, string>,
 ): Promise<TemplateOverrides> {
-  const key = writableKey(env, themeId, templateId);
-  const current = parseOverrides(await env.THEME_OVERRIDES!.get(key));
+  const record = await adoptLegacy(env, themeId, await readTheme(env, themeId), [templateId]);
+  const current = record[templateId] ?? { hidden: [], settings: {} };
   const next: TemplateOverrides = {
     ...current,
     settings: { ...current.settings, [sectionKey]: settings },
   };
   // An empty map is the absence of an override, not an override to nothing.
   if (Object.keys(settings).length === 0) delete next.settings[sectionKey];
-  await env.THEME_OVERRIDES!.put(key, JSON.stringify(next));
+  await writeTheme(env, themeId, withTemplate(record, templateId, next));
   return next;
 }
 
@@ -127,39 +257,49 @@ export async function setSectionHidden(
   section: string,
   hidden: boolean,
 ): Promise<string[]> {
-  const key = writableKey(env, themeId, templateId);
-  const current = parseOverrides(await env.THEME_OVERRIDES!.get(key));
+  const record = await adoptLegacy(env, themeId, await readTheme(env, themeId), [templateId]);
+  const current = record[templateId] ?? { hidden: [], settings: {} };
   const keys = new Set(current.hidden);
   if (hidden) keys.add(section);
   else keys.delete(section);
   const stored = [...keys].sort();
-  await env.THEME_OVERRIDES!.put(key, JSON.stringify({ ...current, hidden: stored }));
+  await writeTheme(env, themeId, withTemplate(record, templateId, { ...current, hidden: stored }));
   return stored;
 }
 
-/**
- * Keyed by the tenant ref that `tenantClientEnv` derives from the authenticated
- * registry row, so one plugin Worker serving several CMS hosts keeps their
- * overrides apart — the same handle the rest of the plugin scopes by.
- *
- * An unresolved tenant gets no key at all rather than a shared fallback: every
- * caller reaches this through an authenticated `/__plugin/admin` request, so a
- * missing ref means something is wrong, and bucketing those requests together
- * would let one misconfigured tenant read and overwrite another's overrides.
- */
-function overrideKey(env: PluginEnv, themeId: string, templateId: string): string {
-  const ref = env.CMS_TENANT_REF?.trim() ?? '';
-  return ref ? `sections:${ref}:${themeId}:${templateId}` : '';
+/** Sets a template's entry, or removes it once it says nothing. */
+function withTemplate(
+  record: ThemeOverrides,
+  templateId: string,
+  value: TemplateOverrides,
+): ThemeOverrides {
+  const next = { ...record };
+  if (value.hidden.length === 0 && Object.keys(value.settings).length === 0) delete next[templateId];
+  else next[templateId] = value;
+  return next;
 }
 
-function parseOverrides(stored: string | null): TemplateOverrides {
+function parseThemeOverrides(stored: unknown): ThemeOverrides {
+  if (!isRecord(stored)) return {};
+  const record: ThemeOverrides = {};
+  for (const [templateId, value] of Object.entries(stored)) {
+    if (!isRecord(value)) continue;
+    record[templateId] = parseOverrides(value);
+  }
+  return record;
+}
+
+/** Accepts the stored shape, or the JSON text the legacy KV namespace holds. */
+function parseOverrides(stored: string | Record<string, unknown> | null): TemplateOverrides {
   const empty: TemplateOverrides = { hidden: [], settings: {} };
   if (!stored) return empty;
-  let parsed: unknown;
-  try {
-    parsed = JSON.parse(stored);
-  } catch {
-    return empty;
+  let parsed: unknown = stored;
+  if (typeof stored === 'string') {
+    try {
+      parsed = JSON.parse(stored);
+    } catch {
+      return empty;
+    }
   }
   if (!isRecord(parsed)) return empty;
 

@@ -8,6 +8,19 @@
       <p class="mt-1 text-sm text-gray-500">{{ description }}</p>
     </div>
     <div class="flex items-center gap-2">
+      {%- comment -%}
+        Who else has this page open, and which field they are in. The data
+        comes from the CMS's own editing session for this page, so someone in
+        the native editor shows up here too.
+      {%- endcomment -%}
+      {% if hasPresence %}
+        <div class="flex items-center gap-1"
+             data-theme-editor-presence
+             data-presence-page-id="{{ presencePageId }}"
+             data-presence-user-id="{{ presenceUserId }}"
+             data-presence-user-name="{{ presenceUserName }}"
+             aria-label="People editing this page"></div>
+      {% endif %}
       <a href="{{ dashboardHref }}"
          class="inline-flex h-10 items-center justify-center rounded-lg border border-gray-300 bg-white px-4 text-sm font-semibold text-gray-700 hover:bg-gray-50">
         Themes
@@ -231,7 +244,8 @@
                   action="{% if schemaMode %}{{ schemaAction }}{% else %}{{ saveAction }}{% endif %}"
                   data-theme-editor-form
                   data-values-action="{{ saveAction }}"
-                  data-schema-action="{{ schemaAction }}" 
+                  data-schema-action="{{ schemaAction }}"
+                  data-section-schema-action="{{ sectionSchemaAction }}"
                   data-theme-editor-settings-panel
                   style="width:50%;flex:0 0 50%">
               <input type="hidden" name="theme" value="{{ themeId }}">

@@ -11,6 +11,9 @@ import { hostLiquid } from './host-liquid';
  * emits them.
  */
 const editorAsset = resolve(process.cwd(), 'views/assets/theme-editor.js');
+
+/** Who the CMS reports as editing this page; set by the presence tests. */
+let presenceRoster: unknown[] = [];
 const editorSection = resolve(process.cwd(), 'views/sections/editor.liquid');
 
 function viewData(overrides: Record<string, unknown> = {}) {
@@ -59,6 +62,13 @@ function viewData(overrides: Record<string, unknown> = {}) {
     schemaName: 'Hero',
     schemaBlock: '0',
     hasSchema: true,
+    sectionSchemaAction: '/admin/plugins/theme-editor/section-schema',
+    // Off unless a test asks for it: the heartbeat would otherwise show up in
+    // every assertion about what this page sends.
+    hasPresence: false,
+    presencePageId: '12',
+    presenceUserId: '42',
+    presenceUserName: 'Ada Lovelace',
     valuesModeHref: '/admin/plugins/theme-editor/editor?theme=example-theme&block=0',
     schemaModeHref: '/admin/plugins/theme-editor/editor?theme=example-theme&block=0&settings=schema',
     schemaSettings: [{
@@ -109,7 +119,7 @@ interface RenderCall { hidden?: string[] }
 
 async function mountEditor(
   overrides: Record<string, unknown> = {},
-): Promise<{ renders: RenderCall[]; fetchMock: ReturnType<typeof vi.fn> }> {
+): Promise<{ renders: RenderCall[]; fetchMock: ReturnType<typeof vi.fn>; sockets: FakeSocket[] }> {
   const source = await readFile(editorSection, 'utf8');
   document.body.innerHTML = String(
     await new (hostLiquid().Liquid)({ outputEscape: 'escape' }).parseAndRender(source, viewData(overrides)),
@@ -123,14 +133,71 @@ async function mountEditor(
     },
   };
 
-  const fetchMock = vi.fn(async () => new Response(
-    JSON.stringify({ ok: true, section: 'hero', hidden: ['hero'], message: 'Hidden hero' }),
-    { headers: { 'content-type': 'application/json' } },
-  ));
+  // The bindings panel is composed from the theme's own {% schema %}, so the
+  // browser asks the server for it rather than loading the whole page again.
+  const fetchMock = vi.fn(async (input: RequestInfo | URL) => {
+    const href = String(typeof input === 'string' ? input : input instanceof URL ? input.href : input.url);
+    if (href.includes('/admin/api/presence/')) {
+      return new Response(JSON.stringify(presenceRoster), {
+        headers: { 'content-type': 'application/json' },
+      });
+    }
+    if (href.includes('/section-schema')) {
+      const requested = new URL(href, 'https://cms.example.com');
+      return new Response(JSON.stringify({
+        ok: true,
+        section: requested.searchParams.get('section') ?? '',
+        block: requested.searchParams.get('block') === null
+          ? null
+          : Number(requested.searchParams.get('block')),
+        schemaName: 'Fetched schema',
+        schemaSettings: [{
+          id: 'headline',
+          label: 'Headline',
+          type: 'text',
+          binding: '{{ page.blocks[1].headline }}',
+          inputName: 'setting:headline',
+          value: 'Fetched value',
+          editable: true,
+        }],
+        hasSchema: true,
+        missingBlock: requested.searchParams.get('block') === null,
+        canEditSchema: true,
+      }), { headers: { 'content-type': 'application/json' } });
+    }
+    return new Response(
+      JSON.stringify({ ok: true, section: 'hero', hidden: ['hero'], message: 'Hidden hero' }),
+      { headers: { 'content-type': 'application/json' } },
+    );
+  });
   vi.stubGlobal('fetch', fetchMock);
 
+  // Presence rides the CMS's own editing session over a WebSocket; nothing in
+  // these tests reaches a real one.
+  const sockets: FakeSocket[] = [];
+  vi.stubGlobal('WebSocket', class {
+    static OPEN = 1;
+    readyState = 1;
+    onmessage: ((event: { data: string }) => void) | null = null;
+    onerror: (() => void) | null = null;
+    sent: string[] = [];
+    constructor(public url: string) {
+      sockets.push(this as unknown as FakeSocket);
+    }
+    send(data: string) {
+      this.sent.push(data);
+    }
+  });
+
   new Function(await readFile(editorAsset, 'utf8'))();
-  return { renders, fetchMock };
+  return { renders, fetchMock, sockets };
+}
+
+interface FakeSocket {
+  url: string;
+  readyState: number;
+  sent: string[];
+  onmessage: ((event: { data: string }) => void) | null;
 }
 
 function visibilityForm(): HTMLFormElement {
@@ -141,6 +208,7 @@ function visibilityForm(): HTMLFormElement {
 
 describe('editor page visibility toggle', () => {
   beforeEach(() => {
+  presenceRoster = [];
     vi.unstubAllGlobals();
     delete (window as unknown as { themeEditorPreview?: unknown }).themeEditorPreview;
   });
@@ -231,11 +299,11 @@ describe('editor page visibility toggle', () => {
     expect(panels().values).toEqual({ hidden: false, disabled: false });
   });
 
-  it('hands a section the page has no block for to the server, which opens it on Schema', async () => {
-    // `cta` is the ninth section this template declares, and the page carries
-    // one block, so nothing in the page backs it. There are no values to
-    // compose here, and the bindings panel is rendered from the theme's own
-    // {% schema %}, which only the server can read.
+  it('opens a section the page has no block for on Schema, without leaving the page', async () => {
+    // `cta` is a section the page carries no block for, so there are no values
+    // to compose and it opens on its bindings. Those come from the theme's own
+    // {% schema %}, which the browser has no copy of — it fetches one rather
+    // than reloading and discarding the selection.
     const assign = vi.fn();
     vi.spyOn(window.location, 'assign').mockImplementation(assign);
     await mountEditor({
@@ -274,19 +342,24 @@ describe('editor page visibility toggle', () => {
 
     const label = document.querySelector('[data-theme-editor-selected-label]') as HTMLElement;
     const section = document.querySelector('[data-theme-editor-selected-section]') as HTMLInputElement;
+    const root = document.querySelector('[data-theme-editor]') as HTMLElement;
 
     const link = document.querySelector('[data-theme-editor-focus][data-section="cta"]') as HTMLAnchorElement;
     link.dispatchEvent(new Event('click', { bubbles: true, cancelable: true }));
-    for (let attempt = 0; attempt < 100 && assign.mock.calls.length === 0; attempt += 1) {
+    for (let attempt = 0; attempt < 100 && root.getAttribute('data-settings-mode') !== 'schema'; attempt += 1) {
       await new Promise((resolve) => setTimeout(resolve, 5));
     }
 
-    expect(assign).toHaveBeenCalledTimes(1);
-    expect(String(assign.mock.calls[0]?.[0])).toContain('section=cta');
-    // Nothing was composed locally, so the panel still describes what it was
-    // rendered for rather than half-describing the section being loaded.
-    expect(label.textContent).toBe('Page settings');
-    expect(section.value).toBe('');
+    expect(assign).not.toHaveBeenCalled();
+    expect(root.getAttribute('data-settings-mode')).toBe('schema');
+    expect(label.textContent).toBe('Cta');
+    expect(section.value).toBe('cta');
+
+    // The panel shows the fetched bindings, and the Values tab is out of reach
+    // because this section has no block to put values in.
+    const input = document.querySelector('[data-theme-editor-setting]') as HTMLInputElement;
+    expect(input.value).toBe('{{ page.blocks[1].headline }}');
+    expect((document.querySelector('[data-theme-editor-mode="values"]') as HTMLElement).hidden).toBe(true);
   });
 
   it('selects a section the page does have a block for without leaving the page', async () => {
@@ -326,8 +399,10 @@ describe('editor page visibility toggle', () => {
       .toBe('0');
   });
 
-  it('loads the block from the server when the schema panel is for another one', async () => {
-    await mountEditor();
+  it('re-reads the bindings when the rendered panel is for another block', async () => {
+    const assign = vi.fn();
+    vi.spyOn(window.location, 'assign').mockImplementation(assign);
+    const { fetchMock } = await mountEditor();
     // The server rendered the schema for block 0; selecting another block
     // leaves it describing something that is no longer on screen.
     const selected = document.querySelector('[data-theme-editor-selected-block]') as HTMLInputElement;
@@ -336,8 +411,61 @@ describe('editor page visibility toggle', () => {
     const schemaLink = document.querySelector('[data-theme-editor-mode="schema"]') as HTMLAnchorElement;
     const event = new Event('click', { bubbles: true, cancelable: true });
     schemaLink.dispatchEvent(event);
+    expect(event.defaultPrevented).toBe(true);
 
-    expect(event.defaultPrevented).toBe(false);
+    const input = () => document.querySelector('[data-theme-editor-setting]') as HTMLInputElement;
+    for (let attempt = 0; attempt < 100 && input().value !== '{{ page.blocks[1].headline }}'; attempt += 1) {
+      await new Promise((resolve) => setTimeout(resolve, 5));
+    }
+
+    // Fetched for the block now selected, and shown in place — the page was
+    // never reloaded, so nothing else on it was lost.
+    expect(assign).not.toHaveBeenCalled();
+    const requested = fetchMock.mock.calls.map((call) => String(call[0]));
+    expect(requested.some((href) => href.includes('/section-schema') && href.includes('block=3'))).toBe(true);
+    expect(input().value).toBe('{{ page.blocks[1].headline }}');
+  });
+
+  it('shows only the newest bindings when selections are changed quickly', async () => {
+    // Two requests in flight: a slow first answer must not land last and leave
+    // the panel describing a section nobody is looking at.
+    const { fetchMock } = await mountEditor();
+    const root = document.querySelector('[data-theme-editor]') as HTMLElement;
+    fetchMock.mockImplementation(async (input: RequestInfo | URL) => {
+      const href = String(input);
+      const requested = new URL(href, 'https://cms.example.com');
+      const section = requested.searchParams.get('section') ?? '';
+      if (section === 'hero') await new Promise((resolve) => setTimeout(resolve, 40));
+      return new Response(JSON.stringify({
+        ok: true,
+        section,
+        block: 0,
+        schemaName: section,
+        schemaSettings: [{
+          id: 'headline', label: 'Headline', type: 'text',
+          binding: `binding-for-${section}`,
+          inputName: 'setting:headline', value: '', editable: true,
+        }],
+        hasSchema: true,
+        missingBlock: false,
+        canEditSchema: true,
+      }), { headers: { 'content-type': 'application/json' } });
+    });
+
+    const schemaLink = document.querySelector('[data-theme-editor-mode="schema"]') as HTMLAnchorElement;
+    const selectedSection = document.querySelector('[data-theme-editor-selected-section]') as HTMLInputElement;
+    const selectedBlock = document.querySelector('[data-theme-editor-selected-block]') as HTMLInputElement;
+
+    selectedSection.value = 'hero';
+    selectedBlock.value = '3';
+    schemaLink.dispatchEvent(new Event('click', { bubbles: true, cancelable: true }));
+    selectedSection.value = 'cta';
+    schemaLink.dispatchEvent(new Event('click', { bubbles: true, cancelable: true }));
+
+    await new Promise((resolve) => setTimeout(resolve, 120));
+    expect(root.getAttribute('data-settings-mode')).toBe('schema');
+    const input = document.querySelector('[data-theme-editor-setting]') as HTMLInputElement;
+    expect(input.value).toBe('binding-for-cta');
   });
 
   it('updates the hint to what the edited binding resolves to', async () => {
@@ -457,6 +585,112 @@ describe('editor page visibility toggle', () => {
     // editor, so cancelling restores it.
     expect(pageSelect.value).toBe(loaded);
     expect(search.value).toBe('Home · home');
+  });
+
+  it('shows who else has this page open', async () => {
+    presenceRoster = [
+      { user_id: '42', user_name: 'Ada Lovelace', last_active: new Date().toISOString() },
+      { user_id: '77', user_name: 'Grace Hopper', last_active: new Date().toISOString() },
+      // Long gone from the keyboard: still here, but shown as idle.
+      { user_id: '99', user_name: 'Old Timer', last_active: new Date(Date.now() - 3.6e6).toISOString() },
+    ];
+    const { fetchMock } = await mountEditor({ hasPresence: true });
+    const host = document.querySelector('[data-theme-editor-presence]') as HTMLElement;
+
+    // The heartbeat goes to the CMS's own presence endpoint for this page, so
+    // someone in the native editor and someone here appear to each other.
+    const posted = fetchMock.mock.calls.find((call) => (call[1] as RequestInit)?.method === 'POST');
+    expect(String(posted?.[0])).toBe('/admin/api/presence/12');
+
+    for (let attempt = 0; attempt < 100 && host.children.length < 3; attempt += 1) {
+      await new Promise((resolve) => setTimeout(resolve, 5));
+    }
+    expect([...host.children].map((node) => node.textContent)).toEqual(['AL', 'GH', 'OT']);
+    expect((host.children[0] as HTMLElement).title).toContain('(you)');
+    expect((host.children[2] as HTMLElement).title).toContain('(idle)');
+    expect((host.children[2] as HTMLElement).style.opacity).toBe('0.4');
+  });
+
+  it('outlines the field another editor is in, and lets go when they leave', async () => {
+    const { sockets } = await mountEditor({ hasPresence: true });
+    const socket = sockets[0];
+    expect(socket.url).toContain('/admin/api/sync/12');
+
+    const field = document.querySelector('[name="field:/_blocks/0/title/en"]') as HTMLInputElement;
+    expect(field.style.outline).toBe('');
+
+    socket.onmessage?.({
+      data: JSON.stringify({
+        type: 'focus',
+        path: 'field:/_blocks/0/title/en',
+        userId: '77',
+        userName: 'Grace Hopper',
+      }),
+    });
+    expect(field.style.outline).toContain('2px');
+    expect(field.title).toBe('Grace Hopper is editing this');
+
+    socket.onmessage?.({
+      data: JSON.stringify({ type: 'blur', path: 'field:/_blocks/0/title/en', userId: '77' }),
+    });
+    expect(field.style.outline).toBe('');
+    expect(field.title).toBe('');
+  });
+
+  it('tells other editors which field it is in, but never sends an edit', async () => {
+    const { sockets } = await mountEditor({ hasPresence: true });
+    const socket = sockets[0];
+    const field = document.querySelector('[name="field:/_blocks/0/title/en"]') as HTMLInputElement;
+
+    field.dispatchEvent(new Event('focusin', { bubbles: true }));
+    field.value = 'edited here';
+    field.dispatchEvent(new Event('input', { bubbles: true }));
+    field.dispatchEvent(new Event('focusout', { bubbles: true }));
+    await new Promise((resolve) => setTimeout(resolve, 20));
+
+    const types = socket.sent.map((raw) => JSON.parse(raw).type);
+    expect(types).toEqual(['focus', 'blur']);
+    // An `op` would join the shared overlay of uncommitted edits, which the
+    // CMS's own save route commits — and this editor saves through the plugin
+    // API instead, so nothing would ever clear it.
+    expect(types).not.toContain('op');
+  });
+
+  it('re-outlines a field after the panel is redrawn', async () => {
+    const { sockets } = await mountEditor({
+      hasPresence: true,
+      // The composed panel has to produce this field again, so the page has to
+      // actually carry it.
+      editorStateJson: JSON.stringify({
+        themeId: 'example-theme',
+        templateId: 'page',
+        pageId: 12,
+        lect: {
+          _type: 'home',
+          _blocks: [{ _id: 'h', _type: 'hero', _weight: 10, title: { en: 'Hello' } }],
+        },
+        languages: ['en'],
+        language: 'en',
+        canEdit: true,
+      }),
+    });
+    sockets[0].onmessage?.({
+      data: JSON.stringify({
+        type: 'focus',
+        path: 'field:/_blocks/0/title/en',
+        userId: '77',
+        userName: 'Grace Hopper',
+      }),
+    });
+
+    // Focusing another section rebuilds the panel from scratch: the highlight
+    // belongs to the field, not to the element that was showing it.
+    const link = document.querySelector('[data-theme-editor-focus][data-section="hero"]') as HTMLAnchorElement;
+    link.dispatchEvent(new Event('click', { bubbles: true, cancelable: true }));
+    await new Promise((resolve) => setTimeout(resolve, 20));
+
+    const field = document.querySelector('[name="field:/_blocks/0/title/en"]') as HTMLInputElement;
+    expect(field.style.outline).toContain('2px');
   });
 
   it('leaves the plain form post alone when the frame cannot be redrawn here', async () => {

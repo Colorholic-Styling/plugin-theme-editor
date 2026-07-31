@@ -63,6 +63,10 @@
   var saving = false;
   var previewTimer = 0;
   var bindingTimer = 0;
+  // Moving through sections quickly can leave more than one bindings request
+  // in flight; only the newest may draw. Otherwise a slow earlier answer would
+  // land last and show the wrong section's bindings.
+  var schemaRequest = 0;
   var settingsMode = root.getAttribute('data-settings-mode') === 'schema' ? 'schema' : 'values';
   var inspectorView = blockFromValue(selectedBlockInput.value) === null
     && !selectedSectionInput.value
@@ -132,20 +136,21 @@
 
     var mode = target.closest('[data-theme-editor-mode]');
     if (mode && root.contains(mode)) {
-      // Both panels are already on the page, so the switch is local — unless
-      // the schema panel describes a block other than the selected one, which
-      // only the server can re-render.
-      if (!schemaPanelMatchesSelection()) return;
+      var wanted = mode.getAttribute('data-theme-editor-mode');
       event.preventDefault();
-      setSettingsMode(mode.getAttribute('data-theme-editor-mode'), mode.href);
+      // Both panels are on the page, so the switch is local. The rendered
+      // schema panel describes whichever selection the server drew it for,
+      // though, so moving here means re-reading it for the current one.
+      if (wanted === 'schema' && !schemaPanelMatchesSelection()) {
+        loadSchemaPanel(mode.href);
+        return;
+      }
+      setSettingsMode(wanted, mode.href);
       return;
     }
 
     var link = target.closest('[data-theme-editor-focus]');
     if (!link || !root.contains(link)) return;
-    // Schema mode is rendered from the section's own {% schema %}, which this
-    // page cannot compose locally, so let the link load it from the server.
-    if (settingsMode === 'schema') return;
     event.preventDefault();
     focusTarget(
       blockFromValue(link.getAttribute('data-block')),
@@ -526,15 +531,170 @@
    * asset is unapproved or still starting up.
    */
   /**
-   * The schema panel is rendered by the server for one block. Composing a
-   * different block here cannot rebuild it, so the mode links fall back to
-   * loading that block when the two no longer agree.
+   * The rendered schema panel describes one selection. When it no longer
+   * matches, loadSchemaPanel() re-reads it rather than the page being loaded
+   * again — the bindings come from the theme's own {% schema %}, which this
+   * page has no copy of, but the server will hand one over as JSON.
    */
   function schemaPanelMatchesSelection() {
     var modes = root.querySelector('[data-theme-editor-modes]');
     if (!modes) return false;
     return modes.getAttribute('data-schema-block') === (selectedBlockInput.value || '')
       && (modes.getAttribute('data-schema-section') || '') === (selectedSectionInput.value || '');
+  }
+
+  /** Where the editor would sit with this selection, for history and fallback. */
+  function schemaHref(block, section) {
+    var href = editorHref(block, section);
+    return href + (href.indexOf('?') === -1 ? '?' : '&') + 'settings=schema';
+  }
+
+  /** The endpoint that describes one section's bindings. */
+  function sectionSchemaUrl(block, section) {
+    var action = form.getAttribute('data-section-schema-action');
+    if (!action) return '';
+    var query = [
+      'theme=' + encodeURIComponent(stringValue(state.themeId)),
+      'template=' + encodeURIComponent(stringValue(state.templateId)),
+      'page_id=' + encodeURIComponent(String(state.pageId)),
+      'language=' + encodeURIComponent(stringValue(state.language)),
+      'section=' + encodeURIComponent(stringValue(section))
+    ];
+    if (block !== null && block !== undefined && block !== '') query.push('block=' + encodeURIComponent(String(block)));
+    return action + '?' + query.join('&');
+  }
+
+  /**
+   * Fetches the current selection's bindings and shows them, leaving the page
+   * — and everything unsaved on it — in place. `fallbackHref` is the editor
+   * URL for the same selection: a request that cannot be made or understood
+   * loads it, so the panel is never silently wrong.
+   */
+  async function loadSchemaPanel(fallbackHref) {
+    var block = selectedBlockInput.value === '' ? null : Number(selectedBlockInput.value);
+    var section = selectedSectionInput.value || '';
+    var url = sectionSchemaUrl(block, section);
+    if (!url) {
+      window.location.assign(fallbackHref);
+      return;
+    }
+
+    var token = ++schemaRequest;
+    // Until the answer arrives the panel still shows the previous section's
+    // bindings. Disabling it keeps those out of a save and out of reach, so
+    // nothing can be typed into — or written from — a panel about to be
+    // replaced.
+    var panel = root.querySelector('[data-theme-editor-panel="schema"]');
+    if (panel) {
+      panel.disabled = true;
+      panel.setAttribute('aria-busy', 'true');
+    }
+
+    try {
+      var response = await window.fetch(url, {
+        headers: { accept: 'application/json', 'x-requested-with': 'XMLHttpRequest' },
+        credentials: 'same-origin'
+      });
+      var payload = await responsePayload(response);
+      if (!response.ok || !isRecord(payload) || payload.ok !== true) throw new Error('unavailable');
+      // A later selection has already been asked for; this answer describes a
+      // panel nobody is looking at any more.
+      if (token !== schemaRequest) return;
+
+      renderSchemaPanel(payload);
+      if (panel) panel.removeAttribute('aria-busy');
+      // Last, because it is what re-enables the panel now that its contents
+      // describe the current selection.
+      setSettingsMode('schema', fallbackHref);
+    } catch (_error) {
+      if (token !== schemaRequest) return;
+      window.location.assign(fallbackHref);
+    }
+  }
+
+  /** Draws the fetched bindings, matching what the server-rendered panel shows. */
+  function renderSchemaPanel(payload) {
+    var panel = root.querySelector('[data-theme-editor-panel="schema"]');
+    var modes = root.querySelector('[data-theme-editor-modes]');
+    if (!panel) return;
+
+    var settings = Array.isArray(payload.schemaSettings) ? payload.schemaSettings : [];
+    var canEdit = payload.canEditSchema === true;
+    panel.replaceChildren();
+
+    var list = element('div', 'space-y-3');
+    settings.forEach(function (setting) {
+      list.appendChild(renderSchemaField(setting, canEdit));
+    });
+    panel.appendChild(list);
+
+    if (settings.length === 0) {
+      panel.appendChild(element(
+        'p',
+        'rounded-lg bg-gray-50 px-3 py-4 text-sm text-gray-500',
+        'This section declares no {% schema %} settings.'
+      ));
+    } else if (!stringValue(payload.section)) {
+      panel.appendChild(element(
+        'p',
+        'mt-3 rounded-lg bg-amber-50 px-3 py-3 text-sm text-amber-700',
+        'No template section binds this block, so there is nothing to save these to.'
+      ));
+    }
+
+    var schemaName = root.querySelector('[data-theme-editor-schema-name]');
+    if (schemaName) schemaName.textContent = stringValue(payload.schemaName);
+    repaintFields();
+
+    // The panel now describes this selection, so the mode links stop asking
+    // for it again.
+    if (modes) {
+      modes.setAttribute('data-schema-block', payload.block === null || payload.block === undefined
+        ? ''
+        : String(payload.block));
+      modes.setAttribute('data-schema-section', stringValue(payload.section));
+    }
+
+    // A section the page has no block for has no values to offer.
+    var valuesLink = root.querySelector('[data-theme-editor-mode="values"]');
+    if (valuesLink) valuesLink.hidden = payload.missingBlock === true;
+  }
+
+  function renderSchemaField(setting, canEdit) {
+    var label = element('label', 'block min-w-0');
+    var heading = element(
+      'span',
+      'mb-1 flex items-center justify-between gap-2 text-sm font-medium text-gray-700'
+    );
+    heading.appendChild(element('span', 'truncate', stringValue(setting.label)));
+    heading.appendChild(element(
+      'span',
+      'shrink-0 rounded bg-gray-100 px-1.5 py-0.5 text-xs font-medium text-gray-500',
+      stringValue(setting.type)
+    ));
+    label.appendChild(heading);
+
+    // The control holds the Liquid the template binds — which is what saving
+    // here writes. The value it resolves to sits underneath as context, since
+    // that is edited in the Values panel instead.
+    var control = element(
+      'input',
+      'block h-10 min-w-0 w-full max-w-full rounded-lg border border-gray-300 px-3 font-mono text-sm'
+      + ' focus:border-transparent focus:outline-none focus:ring-2 focus:ring-indigo-500'
+    );
+    control.name = stringValue(setting.inputName);
+    control.value = stringValue(setting.binding);
+    control.spellcheck = false;
+    control.setAttribute('data-theme-editor-setting', '');
+    control.readOnly = !canEdit;
+    label.appendChild(control);
+
+    var context = element('span', 'mt-1 block truncate text-xs text-gray-400');
+    context.setAttribute('data-theme-editor-setting-value', '');
+    context.textContent = stringValue(setting.value)
+      || (setting.editable ? 'Empty' : 'No stored value backs this setting yet.');
+    label.appendChild(context);
+    return label;
   }
 
   function setSettingsMode(mode, href) {
@@ -752,18 +912,20 @@
 
     try {
       var panel = composePanel(block, section);
-      // A section the page has no block for opens on its bindings, which are
-      // rendered from the theme's own {% schema %} — only the server has that.
-      if (panel.missingBlock) {
-        window.location.assign(fallbackHref);
-        return;
-      }
       renderPanel(panel);
       updateNavigation(panel.selectedBlock, panel.selectedSection);
       syncSettingsModes(panel.selectedBlock, panel.selectedSection);
       selectBlockInPreview(panel.selectedBlock, true);
       if (fieldsScroll) fieldsScroll.scrollTop = 0;
       setInspectorView(nextView, true, true);
+
+      // The bindings panel belongs to the section, so a new selection needs a
+      // new one. It is fetched — never navigated to — while already in Schema
+      // mode, and for a section the page has no block for, which has no values
+      // to show and so opens on its bindings.
+      if (settingsMode === 'schema' || panel.missingBlock) {
+        loadSchemaPanel(schemaHref(panel.selectedBlock, panel.selectedSection));
+      }
 
       if (pushHistory) {
         window.history.pushState(
@@ -961,6 +1123,11 @@
         'This selection has no scalar values to edit yet.'
       ));
     }
+
+    // These inputs are new nodes, so anything another editor is in has to be
+    // outlined again — the highlight belongs to the field, not to the element
+    // that happened to be showing it.
+    repaintFields();
   }
 
   function renderField(field, canEdit) {
@@ -1133,4 +1300,205 @@
     if (text !== undefined) node.textContent = text;
     return node;
   }
+
+  // ── Presence ──────────────────────────────────────────────────────────────
+  //
+  // Who else has this page open, and which field they are in. Both come from
+  // the CMS's own editing session for the page — the same endpoints its native
+  // editor uses — so the two editors see each other rather than each keeping a
+  // private idea of who is here.
+  //
+  // Deliberately receive-mostly on the sync socket: this sends `focus`/`blur`,
+  // which the host relays and never stores, but never `op`. An op joins the
+  // shared overlay of uncommitted edits, and that overlay is committed by the
+  // CMS's own save route — which this editor does not use, it writes through
+  // the plugin API — so an op sent from here would leave every other editor
+  // showing a pending change that nothing ever clears.
+  //
+  // Every part of this is an enhancement: a reader without the CMS permission
+  // for the editing session gets 403s here and an editor that works exactly as
+  // it did before.
+  function setupPresence() {
+    var host = root.querySelector('[data-theme-editor-presence]');
+    if (!host) return;
+    var pageId = host.getAttribute('data-presence-page-id') || '';
+    var selfId = host.getAttribute('data-presence-user-id') || '';
+    if (!pageId || !selfId) return;
+
+    var presenceUrl = '/admin/api/presence/' + encodeURIComponent(pageId);
+    var lastActive = new Date().toISOString();
+    ['mousemove', 'keydown', 'click', 'scroll'].forEach(function (name) {
+      document.addEventListener(name, function () {
+        lastActive = new Date().toISOString();
+      }, { passive: true });
+    });
+
+    function heartbeat() {
+      window.fetch(presenceUrl, {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        credentials: 'same-origin',
+        body: JSON.stringify({ lastActive: lastActive }),
+      }).catch(function () {});
+    }
+
+    function refresh() {
+      window.fetch(presenceUrl, { credentials: 'same-origin' })
+        .then(function (response) { return response.ok ? response.json() : []; })
+        .then(function (editors) { renderPresence(host, selfId, editors); })
+        .catch(function () {});
+    }
+
+    heartbeat();
+    refresh();
+    window.setInterval(heartbeat, 30000);
+    window.setInterval(refresh, 8000);
+    window.addEventListener('beforeunload', function () {
+      window.fetch(presenceUrl, { method: 'DELETE', keepalive: true, credentials: 'same-origin' })
+        .catch(function () {});
+    });
+
+    connectFieldPresence(pageId);
+  }
+
+  function renderPresence(host, selfId, editors) {
+    var list = Array.isArray(editors) ? editors : [];
+    var now = Date.now();
+    var IDLE_MS = 5 * 60 * 1000;
+    host.replaceChildren();
+
+    list.forEach(function (entry) {
+      var userId = stringValue(entry && entry.user_id);
+      var userName = stringValue(entry && entry.user_name);
+      var idle = now - new Date(stringValue(entry && entry.last_active)).getTime() > IDLE_MS;
+      var node = element(
+        'div',
+        'inline-flex h-8 w-8 items-center justify-center rounded-full text-xs font-semibold text-white'
+      );
+      node.textContent = initialsOf(userName);
+      node.style.background = presenceColor(userId);
+      node.style.opacity = idle ? '0.4' : '1';
+      node.title = userName + (idle ? ' (idle)' : '') + (userId === selfId ? ' (you)' : '');
+      host.appendChild(node);
+    });
+  }
+
+  /**
+   * Listens for who is in which field. `focus`/`blur` are a pure relay the
+   * host never stores, so this costs nothing when nobody else is here.
+   */
+  function connectFieldPresence(pageId) {
+    var socket;
+    try {
+      socket = new WebSocket(
+        (window.location.protocol === 'https:' ? 'wss://' : 'ws://')
+        + window.location.host + '/admin/api/sync/' + encodeURIComponent(pageId)
+      );
+    } catch (_error) {
+      return;
+    }
+
+    socket.onmessage = function (event) {
+      var message;
+      try {
+        message = JSON.parse(event.data);
+      } catch (_error) {
+        return;
+      }
+      if (!isRecord(message) || typeof message.path !== 'string') return;
+      // `op` counts as editing too: someone typing has the field, whether or
+      // not a focus arrived first.
+      if (message.type === 'focus' || message.type === 'op') {
+        markFieldEditor(message.path, stringValue(message.userId), stringValue(message.userName));
+      } else if (message.type === 'blur') {
+        clearFieldEditor(message.path, stringValue(message.userId));
+      }
+    };
+    socket.onerror = function () {};
+
+    // The host names a field by its input's `name`, which is also how this
+    // editor names its own — so the two agree without a translation layer.
+    var send = function (type, name) {
+      if (!name || !socket || socket.readyState !== WebSocket.OPEN) return;
+      try {
+        socket.send(JSON.stringify({ type: type, path: name }));
+      } catch (_error) {
+        // A closed socket is not worth reporting: presence is an enhancement.
+      }
+    };
+    root.addEventListener('focusin', function (event) {
+      if (isEditableField(event.target)) send('focus', event.target.name);
+    });
+    root.addEventListener('focusout', function (event) {
+      if (isEditableField(event.target)) send('blur', event.target.name);
+    });
+  }
+
+  function isEditableField(node) {
+    return !!node && (node.tagName === 'INPUT' || node.tagName === 'TEXTAREA' || node.tagName === 'SELECT')
+      && typeof node.name === 'string' && node.name !== '';
+  }
+
+  var fieldEditors = {};
+
+  function markFieldEditor(path, userId, userName) {
+    if (!fieldEditors[path]) fieldEditors[path] = {};
+    fieldEditors[path][userId] = userName;
+    paintField(path);
+  }
+
+  function clearFieldEditor(path, userId) {
+    if (!fieldEditors[path]) return;
+    delete fieldEditors[path][userId];
+    if (Object.keys(fieldEditors[path]).length === 0) delete fieldEditors[path];
+    paintField(path);
+  }
+
+  /**
+   * Outlines the field someone else is in. The panel is redrawn as selections
+   * change, so this is applied by lookup each time rather than held on a node
+   * that may no longer be on the page.
+   */
+  function paintField(path) {
+    var field = root.querySelector('[name="' + cssEscape(path) + '"]');
+    if (!field) return;
+    var editors = fieldEditors[path] ? Object.keys(fieldEditors[path]) : [];
+    if (editors.length === 0) {
+      field.style.outline = '';
+      field.style.outlineOffset = '';
+      field.removeAttribute('title');
+      return;
+    }
+    var names = editors.map(function (userId) { return fieldEditors[path][userId]; })
+      .filter(Boolean);
+    field.style.outline = '2px solid ' + presenceColor(editors[0]);
+    field.style.outlineOffset = '1px';
+    field.title = (names.join(', ') || 'Someone else') + ' is editing this';
+  }
+
+  /** Repaints after a redraw, so an outline survives changing selection. */
+  function repaintFields() {
+    Object.keys(fieldEditors).forEach(paintField);
+  }
+
+  function cssEscape(value) {
+    return value.replace(/\\/g, '\\\\').replace(/"/g, '\\"');
+  }
+
+  function presenceColor(userId) {
+    var palette = ['#6366f1', '#ec4899', '#10b981', '#f59e0b', '#8b5cf6', '#06b6d4', '#f97316'];
+    var hash = 0;
+    for (var index = 0; index < userId.length; index += 1) {
+      hash = (hash * 31 + userId.charCodeAt(index)) & 0xffffff;
+    }
+    return palette[Math.abs(hash) % palette.length];
+  }
+
+  function initialsOf(name) {
+    return name.trim().split(/\s+/).map(function (word) {
+      return word[0] || '';
+    }).join('').slice(0, 2).toUpperCase() || '?';
+  }
+
+  setupPresence();
 })();

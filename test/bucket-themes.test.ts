@@ -1,10 +1,11 @@
 import { readFile } from 'node:fs/promises';
 import { fileURLToPath } from 'node:url';
 import { afterEach, describe, expect, it, vi } from 'vitest';
-import { clearTenantCache, tenantRef } from '@lionrockjs/worker-cms-plugin';
+import { clearPluginStateCache, clearTenantCache, tenantRef } from '@lionrockjs/worker-cms-plugin';
+import { cmsState, themeOverridesKey } from './cms-state';
 import worker from '../src/index';
 import { availableThemes, themeStore } from '../src/themes';
-import { isWritable } from '../src/theme/store';
+import { deleteBucketTheme, isWritable } from '../src/theme/store';
 import type { PluginEnv } from '../src/types';
 
 const SECRET = 'theme-editor-test-secret';
@@ -40,7 +41,10 @@ function bucket(seed: Record<string, string> = {}): R2Bucket & { store: Map<stri
       : null,
     head: async (key: string) => store.has(key) ? {} : null,
     put: async (key: string, value: string) => void store.set(key, value),
-    delete: async (key: string) => void store.delete(key),
+    // R2 accepts one key or a batch; a delete of many is one call.
+    delete: async (key: string | string[]) => {
+      for (const entry of Array.isArray(key) ? key : [key]) store.delete(entry);
+    },
     list: async ({ prefix = '', delimiter }: { prefix?: string; delimiter?: string } = {}) => {
       const keys = [...store.keys()].filter((key) => key.startsWith(prefix));
       if (!delimiter) {
@@ -111,12 +115,35 @@ function kv(seed: Record<string, string> = {}): KVNamespace & { store: Map<strin
     get: async (key: string) => store.get(key) ?? null,
     put: async (key: string, value: string) => void store.set(key, value),
     delete: async (key: string) => void store.delete(key),
+    list: async ({ prefix = '' }: { prefix?: string } = {}) => ({
+      keys: [...store.keys()].filter((key) => key.startsWith(prefix)).map((name) => ({ name })),
+      list_complete: true,
+    }),
   } as unknown as KVNamespace & { store: Map<string, string> };
+}
+
+/** The host's plugin-state store — where the override layer now lives. */
+let state = cmsState();
+
+/**
+ * Installs the CMS stub. The override layer is read on nearly every editor
+ * path, so these need the host answering even when they ask it nothing else.
+ */
+function mockCms(): void {
+  vi.stubGlobal('fetch', async (input: RequestInfo | URL, init: RequestInit = {}) => {
+    const url = new URL(typeof input === 'string' ? input : input instanceof URL ? input.href : input.url);
+    const body = init.body ? JSON.parse(String(init.body)) : undefined;
+    const hosted = state.handle(url, init.method ?? 'GET', body);
+    if (hosted) return hosted;
+    return Response.json({ page_types: ['home'], languages: ['en'], default_language: 'en' });
+  });
 }
 
 afterEach(() => {
   vi.unstubAllGlobals();
   clearTenantCache();
+  clearPluginStateCache();
+  state = cmsState();
 });
 
 describe('bucket-backed themes', () => {
@@ -252,8 +279,10 @@ describe('bucket-backed themes', () => {
 
   it('publishes overrides into the bucket and clears them', async () => {
     const THEMES = bucket(themeFiles('example-theme'));
-    // Overrides are scoped by tenant ref, so the fixture derives the key the
-    // same way the Worker does rather than restating it.
+    mockCms();
+    // Seeded in the pre-migration KV namespace, so this also covers an install
+    // whose pending edits predate the move to the host: they are adopted on
+    // read, used, and the old namespace drains.
     const THEME_OVERRIDES = kv({
       [`sections:${await tenantRef('https://cms.example.com')}:example-theme:page`]: JSON.stringify({
         hidden: ['cta'],
@@ -288,7 +317,95 @@ describe('bucket-backed themes', () => {
     // The hidden section keeps its definition, so showing it again is putting
     // the key back rather than rebuilding it.
     expect(written.sections.cta).toBeDefined();
+    // Cleared from the host, and drained from the namespace it was adopted out of.
+    expect(state.store.has(themeOverridesKey('example-theme'))).toBe(false);
     expect(THEME_OVERRIDES.store.size).toBe(0);
+  });
+
+  it('deletes a theme with its pending edits, and nothing else', async () => {
+    const THEMES = bucket({ ...themeFiles('example-theme'), ...themeFiles('studio-minimal') });
+    mockCms();
+    state = cmsState({
+      [themeOverridesKey('example-theme')]: { page: { hidden: ['cta'], settings: {} } },
+      // Another theme's edits are a separate key and must survive.
+      [themeOverridesKey('studio-minimal')]: { page: { hidden: ['hero'], settings: {} } },
+    });
+
+    const response = await plugin.fetch(
+      adminRequest('/__plugin/admin/delete', {
+        method: 'POST',
+        headers: {
+          'content-type': 'application/x-www-form-urlencoded',
+          accept: 'application/json',
+        },
+        body: new URLSearchParams({ theme: 'example-theme', confirm_id: 'example-theme' }),
+      }),
+      env({ THEMES }),
+    );
+    expect(response.status).toBe(200);
+    expect((await response.json() as { message: string }).message).toContain('Deleted');
+
+    expect([...THEMES.store.keys()].some((key) => key.startsWith('example-theme/'))).toBe(false);
+    expect([...THEMES.store.keys()].some((key) => key.startsWith('studio-minimal/'))).toBe(true);
+    // Overrides are keyed by theme id, so leaving them would hand a theme
+    // later cloned under this id the deleted one's hidden sections.
+    expect(state.store.has(themeOverridesKey('example-theme'))).toBe(false);
+    expect(state.store.has(themeOverridesKey('studio-minimal'))).toBe(true);
+  });
+
+  it('will not delete without the theme id typed back', async () => {
+    const THEMES = bucket(themeFiles('example-theme'));
+    const response = await plugin.fetch(
+      adminRequest('/__plugin/admin/delete', {
+        method: 'POST',
+        headers: {
+          'content-type': 'application/x-www-form-urlencoded',
+          accept: 'application/json',
+        },
+        body: new URLSearchParams({ theme: 'example-theme', confirm_id: 'wrong' }),
+      }),
+      env({ THEMES }),
+    );
+    expect(response.status).toBe(400);
+    // The confirm dialog is a browser behavior the request never sees, so a
+    // stray POST must not be enough on its own.
+    expect(THEMES.store.has('example-theme/templates/page.json')).toBe(true);
+  });
+
+  it('refuses to delete a theme the deploy owns rather than the bucket', async () => {
+    const response = await plugin.fetch(
+      adminRequest('/__plugin/admin/delete', {
+        method: 'POST',
+        headers: {
+          'content-type': 'application/x-www-form-urlencoded',
+          accept: 'application/json',
+        },
+        body: new URLSearchParams({ theme: 'example-theme', confirm_id: 'example-theme' }),
+      }),
+      env(),
+    );
+    expect(response.status).toBe(400);
+    expect((await response.json() as { message: string }).message).toContain('asset bundle');
+  });
+
+  it('deletes only inside the tenant that asked', async () => {
+    // The prefix is rebuilt from the scope rather than taken from the caller,
+    // so a delete cannot reach across tenants even when the theme ids match.
+    const one = await tenantRef('https://one.example.com');
+    const two = await tenantRef('https://two.example.com');
+    const THEMES = bucket({
+      ...prefixed(`t/${one}/`, themeFiles('portfolio')),
+      ...prefixed(`t/${two}/`, themeFiles('portfolio')),
+      // The pre-multi-tenant install's own unprefixed theme of the same name.
+      ...themeFiles('portfolio'),
+    });
+
+    const removed = await deleteBucketTheme(THEMES, 'portfolio', { tenantRef: one });
+    expect(removed).toBe(3);
+
+    expect([...THEMES.store.keys()].some((key) => key.startsWith(`t/${one}/portfolio/`))).toBe(false);
+    expect([...THEMES.store.keys()].some((key) => key.startsWith(`t/${two}/portfolio/`))).toBe(true);
+    expect(THEMES.store.has('portfolio/templates/page.json')).toBe(true);
   });
 
   it('explains a theme with no templates instead of redirecting to itself', async () => {
@@ -322,7 +439,7 @@ describe('bucket-backed themes', () => {
         headers: { 'content-type': 'application/x-www-form-urlencoded' },
         body: new URLSearchParams({ theme: 'example-theme' }),
       }),
-      env({ THEME_OVERRIDES: kv() }),
+      env(),
     );
     expect(response.status).toBe(409);
     const payload = await response.json() as { message: string };
