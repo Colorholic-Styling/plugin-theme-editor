@@ -16,7 +16,7 @@ import {
   selectedBlockFrom,
 } from './editor-model';
 import { themeRuntimeSettings } from './theme/renderer';
-import { applyOverridesToTemplate } from './theme/publish';
+import { applyOverridesToTemplate, publishCommitMessage } from './theme/publish';
 import { buildThemeManifest } from './theme/manifest';
 import { schemaFields, sectionSchema } from './theme/schema';
 import {
@@ -33,7 +33,7 @@ import {
   githubAppDashboard,
   githubInstallUrl,
 } from './theme/github-app';
-import { isWritable, R2ThemeStore } from './theme/store';
+import { isReservedThemeId, isWritable, R2ThemeStore } from './theme/store';
 
 import {
   allTemplateOverrides,
@@ -49,6 +49,7 @@ import {
   availableThemes,
   themeEditorHref,
   themeFromId,
+  themeScope,
   themeStore,
   type ThemeDefinition,
 } from './themes';
@@ -249,10 +250,14 @@ async function editor(
     });
   }
   const language = selectedLanguage(url, meta.languages, meta.default_language);
-  const [sections, overrides] = await Promise.all([
+  const [sections, overrides, pendingOverrides] = await Promise.all([
     templateSections(selectedTemplate, store),
     templateOverrides(env, theme.id, selectedTemplate.id),
+    // Across every template, not just the selected one: publishing folds in
+    // all of them, so the button has to speak for all of them.
+    allTemplateOverrides(env, theme.id, templates.map((entry) => entry.id)),
   ]);
+  const pendingTemplateCount = Object.keys(pendingOverrides).length;
   const hidden = new Set(overrides.hidden);
   const sectionByBlock = new Map(sections
     .filter((entry) => entry.blockIndex !== null)
@@ -349,6 +354,16 @@ async function editor(
     })),
     dashboardHref: ADMIN_BASE,
     canEdit: access.canEdit,
+    // Publishing writes the override layer into the theme's own files, and —
+    // for a theme that came from GitHub — commits them in the same step, so
+    // the button says which of the two it is about to do.
+    publishAction: `${ADMIN_BASE}/publish`,
+    canPublish: access.canEdit && isWritable(store),
+    pendingTemplates: pendingTemplateCount,
+    hasPending: pendingTemplateCount > 0,
+    publishTarget: theme.repo
+      ? `${theme.repo.owner}/${theme.repo.repo}@${theme.repo.branch}`
+      : '',
     pages: pages.map((page) => ({
       id: page.id,
       label: `${page.name} · ${page.page_type || 'default'}`,
@@ -594,6 +609,9 @@ async function cloneThemeFromGitHub(request: Request, env: PluginEnv): Promise<R
   if (!/^[a-z0-9][a-z0-9-]*$/.test(themeId)) {
     return githubResult(request, false, 'Theme id must be lowercase letters, numbers, and dashes.');
   }
+  if (isReservedThemeId(themeId)) {
+    return githubResult(request, false, `\`${themeId}\` is reserved; choose another theme id.`);
+  }
 
   try {
     const files = await ready.client.readTheme(repo);
@@ -601,7 +619,7 @@ async function cloneThemeFromGitHub(request: Request, env: PluginEnv): Promise<R
       return githubResult(request, false, `No theme files found under ${repo.path || 'the repository root'}.`);
     }
 
-    const store = new R2ThemeStore(env.THEMES as R2Bucket, themeId);
+    const store = new R2ThemeStore(env.THEMES as R2Bucket, themeId, themeScope(env));
     for (const file of files) await store.write(file.path, file.content);
     // A theme repository has no manifest — it is a build product — so one is
     // generated from what arrived. Without it the theme lands with no
@@ -631,6 +649,20 @@ async function pushThemeToGitHub(request: Request, env: PluginEnv): Promise<Resp
 
   const store = themeStore(env, theme);
   const templates = await themeTemplates(env, theme, store);
+
+  // Push commits what the bucket holds, which does not include edits still
+  // sitting in the override layer. Pushing now would put a copy of the theme
+  // WITHOUT them into the repository, and look like it had succeeded.
+  const pending = await allTemplateOverrides(env, theme.id, templates.map((entry) => entry.id));
+  if (Object.keys(pending).length > 0) {
+    return githubResult(
+      request,
+      false,
+      'This theme has editor changes that are not in the bucket yet. '
+      + 'Publish first — publishing writes them into the theme and pushes in one commit.',
+    );
+  }
+
   const files = await Promise.all(templates.map(async (template) => ({
     path: template.path,
     content: await store.read(template.path),
@@ -731,7 +763,7 @@ async function uploadTheme(request: Request, env: PluginEnv, url: URL): Promise<
     }, { status: 503 });
   }
   const themeId = (url.searchParams.get('theme') || '').trim();
-  if (!/^[a-z0-9][a-z0-9-]*$/.test(themeId)) {
+  if (!/^[a-z0-9][a-z0-9-]*$/.test(themeId) || isReservedThemeId(themeId)) {
     return Response.json({ ok: false, message: 'Invalid theme id.' }, { status: 400 });
   }
 
@@ -740,7 +772,7 @@ async function uploadTheme(request: Request, env: PluginEnv, url: URL): Promise<
     return Response.json({ ok: false, message: 'Expected a { path: source } object.' }, { status: 400 });
   }
 
-  const store = new R2ThemeStore(env.THEMES, themeId);
+  const store = new R2ThemeStore(env.THEMES, themeId, themeScope(env));
   const written: string[] = [];
   for (const [path, source] of Object.entries(files)) {
     // Paths come from an upload, so they decide bucket keys: keep traversal
@@ -774,8 +806,14 @@ async function publishTheme(request: Request, env: PluginEnv): Promise<Response>
 
   const templates = await themeTemplates(env, theme, store);
   const overrides = await allTemplateOverrides(env, theme.id, templates.map((entry) => entry.id));
-  const published: Array<{ template: string; changes: string[] }> = [];
 
+  // Pass one computes every new file without writing anything. The order of
+  // what follows is load-bearing: commit, then write, then clear. Writing the
+  // bucket first would be unrecoverable — the override layer replayed against
+  // an already-applied template yields no changes, so a publish that failed to
+  // push could never be retried, and the edits would be stranded as applied
+  // locally but never committed.
+  const pending: Array<{ templateId: string; path: string; content: string; changes: string[] }> = [];
   for (const [templateId, layer] of Object.entries(overrides)) {
     const template = templates.find((entry) => entry.id === templateId);
     if (!template || template.format !== 'json') continue;
@@ -784,14 +822,82 @@ async function publishTheme(request: Request, env: PluginEnv): Promise<Response>
       layer,
     );
     if (changes.length === 0) continue;
-    await store.write(template.path, `${JSON.stringify(next, null, 2)}\n`);
-    // Cleared only after the write landed, so a failure leaves the edit in the
-    // editor rather than losing it between the two.
-    await clearTemplateOverrides(env, theme.id, templateId);
-    published.push({ template: templateId, changes });
+    pending.push({
+      templateId,
+      path: template.path,
+      content: `${JSON.stringify(next, null, 2)}\n`,
+      changes,
+    });
   }
 
-  return Response.json({ ok: true, theme: theme.id, published });
+  const published = pending.map(({ templateId, changes }) => ({ template: templateId, changes }));
+  if (pending.length === 0) {
+    return publishResult(request, { ok: true, theme: theme.id, published, pushed: false });
+  }
+
+  // A theme with no repository has nowhere to push, which is not a failure:
+  // the bucket is what serves the site. A theme that HAS one must reach it,
+  // because a silent skip would leave the repository behind without saying so.
+  let commit = '';
+  if (theme.repo) {
+    const ready = await gitHubClient(env);
+    if (ready instanceof Response) return ready;
+    try {
+      commit = await ready.client.commit(
+        theme.repo,
+        pending.map(({ path, content }) => ({ path, content })),
+        publishCommitMessage(published),
+      );
+    } catch (error) {
+      return publishResult(request, {
+        ok: false,
+        theme: theme.id,
+        published: [],
+        pushed: false,
+        message: `Nothing was published: ${gitHubMessage(error)}`,
+      }, 502);
+    }
+  }
+
+  for (const { path, content } of pending) await store.write(path, content);
+  // Cleared only once the theme itself says what these said, so a failure
+  // anywhere above leaves the edits in the editor rather than losing them.
+  for (const { templateId } of pending) await clearTemplateOverrides(env, theme.id, templateId);
+
+  const target = theme.repo
+    ? `${theme.repo.owner}/${theme.repo.repo}@${theme.repo.branch}`
+    : '';
+  return publishResult(request, {
+    ok: true,
+    theme: theme.id,
+    published,
+    pushed: !!commit,
+    commit,
+    message: commit
+      ? `Published ${published.length} template(s) and pushed to ${target} (${commit.slice(0, 7)}).`
+      : `Published ${published.length} template(s) to the theme bucket.`,
+  });
+}
+
+/**
+ * Publishing is reachable both from the editor form and from tooling that
+ * sends `accept: application/json`, so it answers in whichever the caller
+ * speaks — the same split `githubResult` makes.
+ */
+function publishResult(
+  request: Request,
+  body: {
+    ok: boolean;
+    theme: string;
+    published: Array<{ template: string; changes: string[] }>;
+    pushed: boolean;
+    commit?: string;
+    message?: string;
+  },
+  status = 200,
+): Response {
+  if (acceptsJson(request)) return Response.json(body, { status });
+  return redirect(`${ADMIN_BASE}?flash=${encodeURIComponent(body.message ?? '')}`);
 }
 
 async function clearOverrides(

@@ -29,6 +29,19 @@ export class MissingOverrideStoreError extends Error {
 }
 
 /**
+ * Raised when the request carries no resolved tenant. Distinct from a missing
+ * store because the fix is different: this one is a connection problem, not a
+ * provisioning one.
+ */
+export class UnknownTenantError extends Error {
+  constructor() {
+    super('This request could not be attributed to a connected CMS, so its '
+      + 'theme overrides cannot be read or written.');
+    this.name = 'UnknownTenantError';
+  }
+}
+
+/**
  * Visible-by-default: an unprovisioned or unreachable store must not blank out
  * a preview, so reads degrade to "nothing hidden" while writes fail loudly.
  */
@@ -37,8 +50,9 @@ export async function templateOverrides(
   themeId: string,
   templateId: string,
 ): Promise<TemplateOverrides> {
-  if (!env.THEME_OVERRIDES) return { hidden: [], settings: {} };
-  return parseOverrides(await env.THEME_OVERRIDES.get(overrideKey(env, themeId, templateId)));
+  const key = overrideKey(env, themeId, templateId);
+  if (!env.THEME_OVERRIDES || !key) return { hidden: [], settings: {} };
+  return parseOverrides(await env.THEME_OVERRIDES.get(key));
 }
 
 export async function hiddenSections(
@@ -70,8 +84,15 @@ export async function clearTemplateOverrides(
   themeId: string,
   templateId: string,
 ): Promise<void> {
+  await env.THEME_OVERRIDES!.delete(writableKey(env, themeId, templateId));
+}
+
+/** The key a write must use, or the reason it cannot be written. */
+function writableKey(env: PluginEnv, themeId: string, templateId: string): string {
   if (!env.THEME_OVERRIDES) throw new MissingOverrideStoreError();
-  await env.THEME_OVERRIDES.delete(overrideKey(env, themeId, templateId));
+  const key = overrideKey(env, themeId, templateId);
+  if (!key) throw new UnknownTenantError();
+  return key;
 }
 
 /**
@@ -86,16 +107,15 @@ export async function setSectionSettings(
   sectionKey: string,
   settings: Record<string, string>,
 ): Promise<TemplateOverrides> {
-  if (!env.THEME_OVERRIDES) throw new MissingOverrideStoreError();
-  const key = overrideKey(env, themeId, templateId);
-  const current = parseOverrides(await env.THEME_OVERRIDES.get(key));
+  const key = writableKey(env, themeId, templateId);
+  const current = parseOverrides(await env.THEME_OVERRIDES!.get(key));
   const next: TemplateOverrides = {
     ...current,
     settings: { ...current.settings, [sectionKey]: settings },
   };
   // An empty map is the absence of an override, not an override to nothing.
   if (Object.keys(settings).length === 0) delete next.settings[sectionKey];
-  await env.THEME_OVERRIDES.put(key, JSON.stringify(next));
+  await env.THEME_OVERRIDES!.put(key, JSON.stringify(next));
   return next;
 }
 
@@ -107,25 +127,29 @@ export async function setSectionHidden(
   section: string,
   hidden: boolean,
 ): Promise<string[]> {
-  if (!env.THEME_OVERRIDES) throw new MissingOverrideStoreError();
-  const key = overrideKey(env, themeId, templateId);
-  const current = parseOverrides(await env.THEME_OVERRIDES.get(key));
+  const key = writableKey(env, themeId, templateId);
+  const current = parseOverrides(await env.THEME_OVERRIDES!.get(key));
   const keys = new Set(current.hidden);
   if (hidden) keys.add(section);
   else keys.delete(section);
   const stored = [...keys].sort();
-  await env.THEME_OVERRIDES.put(key, JSON.stringify({ ...current, hidden: stored }));
+  await env.THEME_OVERRIDES!.put(key, JSON.stringify({ ...current, hidden: stored }));
   return stored;
 }
 
 /**
- * Keyed by the tenant's CMS origin, which `tenantClientEnv` resolves from the
- * authenticated registry row, so one plugin Worker serving several CMS hosts
- * keeps their overrides apart.
+ * Keyed by the tenant ref that `tenantClientEnv` derives from the authenticated
+ * registry row, so one plugin Worker serving several CMS hosts keeps their
+ * overrides apart — the same handle the rest of the plugin scopes by.
+ *
+ * An unresolved tenant gets no key at all rather than a shared fallback: every
+ * caller reaches this through an authenticated `/__plugin/admin` request, so a
+ * missing ref means something is wrong, and bucketing those requests together
+ * would let one misconfigured tenant read and overwrite another's overrides.
  */
 function overrideKey(env: PluginEnv, themeId: string, templateId: string): string {
-  const tenant = (env.CMS_URL || 'local').replace(/\/+$/, '');
-  return `sections:${tenant}:${themeId}:${templateId}`;
+  const ref = env.CMS_TENANT_REF?.trim() ?? '';
+  return ref ? `sections:${ref}:${themeId}:${templateId}` : '';
 }
 
 function parseOverrides(stored: string | null): TemplateOverrides {

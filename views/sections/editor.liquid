@@ -18,8 +18,31 @@
           Native editor
         </a>
       {% endif %}
+      {% if canPublish and hasPending %}
+        <form method="post" action="{{ publishAction }}" class="shrink-0"
+              data-confirm="{% if publishTarget != blank %}Write these changes into the theme and commit them to {{ publishTarget }}?{% else %}Write these changes into the theme?{% endif %}">
+          <input type="hidden" name="theme" value="{{ themeId }}">
+          <button type="submit"
+                  title="{% if publishTarget != blank %}Publish and push to {{ publishTarget }}{% else %}Publish to the theme bucket{% endif %}"
+                  class="inline-flex h-10 items-center justify-center rounded-lg bg-indigo-600 px-4 text-sm font-semibold text-white hover:bg-indigo-700">
+            {% if publishTarget != blank %}Publish &amp; push{% else %}Publish{% endif %}
+            <span class="ml-2 inline-flex items-center rounded-full bg-indigo-500 px-2 text-xs">{{ pendingTemplates }}</span>
+          </button>
+        </form>
+      {% endif %}
     </div>
   </div>
+
+  {% if canPublish and hasPending %}
+    <p class="mb-4 rounded-lg border border-amber-200 bg-amber-50 px-4 py-3 text-sm text-amber-700">
+      {{ pendingTemplates }} template(s) have editor changes that are not in the theme yet.
+      {% if publishTarget != blank %}
+        Publishing writes them into the theme and commits them to {{ publishTarget }} in one step.
+      {% else %}
+        Publishing writes them into the theme's own files.
+      {% endif %}
+    </p>
+  {% endif %}
 
   {% if flash != blank %}
     <p class="mb-4 rounded-lg border border-emerald-200 bg-emerald-50 px-4 py-3 text-sm text-emerald-700">{{ flash }}</p>

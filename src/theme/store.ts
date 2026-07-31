@@ -23,15 +23,28 @@ export function isWritable(store: ThemeStore): store is WritableThemeStore {
 }
 
 /**
- * One theme inside a bucket that holds several, keyed `<theme-id>/<path>`.
- * The bucket is the root: each top-level folder is a theme, so adding one is
- * uploading a folder rather than changing this Worker.
+ * Themes are stored per tenant, under `t/<tenant-ref>/<theme-id>/<path>`.
+ *
+ * One bucket serves every CMS this Worker is connected to, and R2 has no
+ * per-prefix access control, so this prefix IS the isolation boundary: without
+ * it two tenants that clone repositories of the same name write to the same
+ * folder and overwrite each other. It is derived here, from a tenant handle,
+ * rather than accepted as a caller-supplied key — that keeps the boundary in
+ * one place instead of at every call site.
+ *
+ * The env-fallback tenant (a single pre-multi-tenant install) keeps reading
+ * and writing unprefixed keys, so its existing themes stay reachable.
  */
 export class R2ThemeStore implements WritableThemeStore {
+  private readonly prefix: string;
+
   constructor(
     private readonly bucket: R2Bucket,
     private readonly themeId: string,
-  ) {}
+    scope: ThemeScope = {},
+  ) {
+    this.prefix = themePrefix(scope);
+  }
 
   async read(path: string): Promise<string> {
     const object = await this.bucket.get(this.key(path));
@@ -51,7 +64,7 @@ export class R2ThemeStore implements WritableThemeStore {
 
   /** Every file in this theme, as store paths. */
   async list(): Promise<string[]> {
-    const prefix = `${this.themeId}/`;
+    const prefix = `${this.prefix}${this.themeId}/`;
     const paths: string[] = [];
     let cursor: string | undefined;
     do {
@@ -63,18 +76,51 @@ export class R2ThemeStore implements WritableThemeStore {
   }
 
   private key(path: string): string {
-    return `${this.themeId}${normalize(path)}`;
+    return `${this.prefix}${this.themeId}${normalize(path)}`;
   }
 }
 
-/** Top-level folders in the bucket, one per theme. */
-export async function bucketThemeIds(bucket: R2Bucket): Promise<string[]> {
+/** Which tenant's themes a store or listing addresses. */
+export interface ThemeScope {
+  /** Tenant ref (`env.CMS_TENANT_REF`). Absent means the legacy layout. */
+  tenantRef?: string;
+  /** True for the env-fallback tenant, which keeps the unprefixed layout. */
+  legacy?: boolean;
+}
+
+/**
+ * Top-level key that holds every tenant's themes. Reserved: at the legacy
+ * (unprefixed) level it must not be mistaken for — or claimed as — a theme,
+ * or one install's folder would shadow every other tenant's storage.
+ */
+export const TENANT_KEY_PREFIX = 't';
+
+/** True for a theme id that must not be created, whatever the scope. */
+export function isReservedThemeId(themeId: string): boolean {
+  return themeId === TENANT_KEY_PREFIX;
+}
+
+/**
+ * Key prefix for a scope: `t/<ref>/`, or none for the legacy single-tenant
+ * install. An unidentified tenant also gets none rather than a namespace of
+ * its own — callers reach this only through authenticated requests, so a
+ * missing ref means the legacy install.
+ */
+export function themePrefix(scope: ThemeScope): string {
+  if (scope.legacy || !scope.tenantRef) return '';
+  return `${TENANT_KEY_PREFIX}/${scope.tenantRef}/`;
+}
+
+/** Theme folders visible to one tenant. */
+export async function bucketThemeIds(bucket: R2Bucket, scope: ThemeScope = {}): Promise<string[]> {
+  const prefix = themePrefix(scope);
   const ids: string[] = [];
   let cursor: string | undefined;
   do {
-    const page = await bucket.list({ delimiter: '/', cursor, limit: 1000 });
-    for (const prefix of page.delimitedPrefixes) {
-      const id = prefix.replace(/\/$/, '');
+    const page = await bucket.list({ prefix, delimiter: '/', cursor, limit: 1000 });
+    for (const delimited of page.delimitedPrefixes) {
+      const id = delimited.slice(prefix.length).replace(/\/$/, '');
+      if (isReservedThemeId(id)) continue;
       if (/^[a-z0-9][a-z0-9-]*$/.test(id)) ids.push(id);
     }
     cursor = page.truncated ? page.cursor : undefined;

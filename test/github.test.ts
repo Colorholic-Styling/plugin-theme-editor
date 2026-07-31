@@ -1,7 +1,7 @@
 import { readFile } from 'node:fs/promises';
 import { fileURLToPath } from 'node:url';
 import { afterEach, describe, expect, it, vi } from 'vitest';
-import { clearTenantCache } from '@lionrockjs/worker-cms-plugin';
+import { clearTenantCache, tenantRef } from '@lionrockjs/worker-cms-plugin';
 import worker from '../src/index';
 import { parseRepo, repoFromUrl } from '../src/theme/github';
 import type { PluginEnv } from '../src/types';
@@ -74,12 +74,49 @@ const PAGE_JSON = JSON.stringify({
   order: ['hero'],
 }, null, 2);
 
+/** A template with a section to hide, so publishing has something to fold in. */
+const PUBLISHABLE_PAGE_JSON = JSON.stringify({
+  layout: 'default',
+  sections: {
+    hero: { type: 'hero', settings: { title: '{{ page.title }}' } },
+    cta: { type: 'cta', settings: {} },
+  },
+  order: ['hero', 'cta'],
+}, null, 2);
+
+/** A bucket-backed theme that knows the repository it came from. */
+function repoTheme(): Record<string, string> {
+  return {
+    'website/theme-manifest.json': JSON.stringify({
+      repo: { owner: 'Example-Org', repo: 'website', branch: 'main', path: 'views' },
+      templates: [{ id: 'page', label: 'Page', path: '/templates/page.json', format: 'json' }],
+      files: ['/templates/page.json'],
+    }),
+    'website/templates/page.json': PUBLISHABLE_PAGE_JSON,
+  };
+}
+
+function kv(seed: Record<string, string> = {}): KVNamespace & { store: Map<string, string> } {
+  const store = new Map(Object.entries(seed));
+  return {
+    store,
+    get: async (key: string) => store.get(key) ?? null,
+    put: async (key: string, value: string) => void store.set(key, value),
+    delete: async (key: string) => void store.delete(key),
+  } as unknown as KVNamespace & { store: Map<string, string> };
+}
+
 /**
  * Stands in for api.github.com. Nothing in these tests reaches the real
  * service: a push is an outward-facing, hard-to-undo action, so it is exercised
  * against a recorded contract instead.
  */
-function gitHub(files: Record<string, string> = {}) {
+function gitHub(files: Record<string, string> = {}, options: {
+  /** Reject the commit, to exercise what a failed push leaves behind. */
+  failCommit?: boolean;
+  /** Return the branch's existing tree, as an unchanged commit would. */
+  treeUnchanged?: boolean;
+} = {}) {
   const calls: Array<{ method: string; path: string; body: unknown }> = [];
   const blobs = new Map<string, string>();
   let committed: { tree: unknown; parents: string[]; message: string } | null = null;
@@ -89,8 +126,16 @@ function gitHub(files: Record<string, string> = {}) {
     const url = new URL(typeof input === 'string' ? input : input instanceof URL ? input.href : input.url);
     const method = init.method ?? 'GET';
     const body = init.body ? JSON.parse(String(init.body)) : undefined;
-    calls.push({ method, path: url.pathname, body });
 
+    // The connected installation is held by the CMS, so resolving a token asks
+    // the host first. These tests cover the personal-token path, where the
+    // host legitimately has nothing stored. Not recorded in `calls`, which
+    // exists to assert what was sent to GitHub.
+    if (url.pathname.startsWith('/__cms/state/')) {
+      return Response.json({ error: 'not_found' }, { status: 404 });
+    }
+
+    calls.push({ method, path: url.pathname, body });
     if (url.hostname !== 'api.github.com') throw new Error(`Unexpected host ${url.hostname}`);
     if (init.headers && (init.headers as Record<string, string>).authorization !== `Bearer ${TOKEN}`) {
       return new Response('bad credentials', { status: 401 });
@@ -121,9 +166,10 @@ function gitHub(files: Record<string, string> = {}) {
       return Response.json({ sha });
     }
     if (method === 'POST' && url.pathname.endsWith('/git/trees')) {
-      return Response.json({ sha: 'new-tree' });
+      return Response.json({ sha: options.treeUnchanged ? 'tree-sha' : 'new-tree' });
     }
     if (method === 'POST' && url.pathname.endsWith('/git/commits')) {
+      if (options.failCommit) return new Response('upstream is down', { status: 500 });
       committed = body;
       return Response.json({ sha: 'commit-abcdef1234' });
     }
@@ -236,6 +282,105 @@ describe('GitHub theme source', () => {
     expect(api.ref).toBe('commit-abcdef1234');
   });
 
+  it('publishes the override layer as one commit, then clears it', async () => {
+    const THEMES = bucket(repoTheme());
+    const THEME_OVERRIDES = kv({
+      [`sections:${await tenantRef('https://cms.example.com')}:website:page`]: JSON.stringify({
+        hidden: ['cta'],
+        settings: { hero: { title: '{{ page.blocks[0].eyebrow }}' } },
+      }),
+    });
+    const api = gitHub({ 'views/templates/page.json': PAGE_JSON });
+
+    const response = await plugin.fetch(
+      adminRequest('/__plugin/admin/publish', { theme: 'website' }),
+      env({ THEMES, THEME_OVERRIDES, GITHUB_TOKEN: TOKEN }),
+    );
+    expect(response.status).toBe(200);
+    expect(await response.json()).toMatchObject({ ok: true, pushed: true, commit: 'commit-abcdef1234' });
+
+    // Only the template that actually changed is committed; the rest of the
+    // branch carries over through base_tree.
+    const tree = api.calls.find((call) => call.path.endsWith('/git/trees'))?.body as {
+      tree: Array<{ path: string }>;
+    };
+    expect(tree.tree.map((entry) => entry.path)).toEqual(['views/templates/page.json']);
+
+    // The history says what was edited, not merely that something was.
+    const { message } = api.committed as { message: string };
+    expect(message).toContain('Update the page template');
+    expect(message).toContain('- order: removed cta');
+    expect(message).toContain('hero.title');
+
+    expect(JSON.parse(THEMES.store.get('website/templates/page.json') as string).order).toEqual(['hero']);
+    expect(THEME_OVERRIDES.store.size).toBe(0);
+  });
+
+  it('publishes nothing when the commit fails, so the edit can be retried', async () => {
+    // Bucket-first ordering would strand the edit: replayed against an applied
+    // template the override yields no changes, so a retry would publish nothing
+    // and the repository would never receive it.
+    const THEMES = bucket(repoTheme());
+    const key = `sections:${await tenantRef('https://cms.example.com')}:website:page`;
+    const THEME_OVERRIDES = kv({ [key]: JSON.stringify({ hidden: ['cta'], settings: {} }) });
+    gitHub({ 'views/templates/page.json': PAGE_JSON }, { failCommit: true });
+
+    const response = await plugin.fetch(
+      adminRequest('/__plugin/admin/publish', { theme: 'website' }),
+      env({ THEMES, THEME_OVERRIDES, GITHUB_TOKEN: TOKEN }),
+    );
+    expect(response.status).toBe(502);
+    expect((await response.json() as { message: string }).message).toContain('Nothing was published');
+
+    expect(JSON.parse(THEMES.store.get('website/templates/page.json') as string).order)
+      .toEqual(['hero', 'cta']);
+    expect(THEME_OVERRIDES.store.has(key)).toBe(true);
+  });
+
+  it('makes no commit when the branch already says what the templates say', async () => {
+    // A retry after a partial failure recomputes the same content. Committing
+    // an identical tree would add an empty commit for every attempt.
+    const THEMES = bucket(repoTheme());
+    const THEME_OVERRIDES = kv({
+      [`sections:${await tenantRef('https://cms.example.com')}:website:page`]: JSON.stringify({
+        hidden: ['cta'],
+        settings: {},
+      }),
+    });
+    const api = gitHub({ 'views/templates/page.json': PAGE_JSON }, { treeUnchanged: true });
+
+    const response = await plugin.fetch(
+      adminRequest('/__plugin/admin/publish', { theme: 'website' }),
+      env({ THEMES, THEME_OVERRIDES, GITHUB_TOKEN: TOKEN }),
+    );
+    expect(response.status).toBe(200);
+    expect(api.committed).toBeNull();
+    expect(api.calls.some((call) => call.method === 'PATCH')).toBe(false);
+    // Still a successful publish: the repository is already correct.
+    expect(THEME_OVERRIDES.store.size).toBe(0);
+  });
+
+  it('refuses to push a theme whose editor changes are not published yet', async () => {
+    // Push commits what the bucket holds. With edits still in the override
+    // layer that is the theme WITHOUT them, and it would look like it worked.
+    const THEMES = bucket(repoTheme());
+    const THEME_OVERRIDES = kv({
+      [`sections:${await tenantRef('https://cms.example.com')}:website:page`]: JSON.stringify({
+        hidden: ['cta'],
+        settings: {},
+      }),
+    });
+    const api = gitHub({ 'views/templates/page.json': PAGE_JSON });
+
+    const response = await plugin.fetch(
+      adminRequest('/__plugin/admin/github/push', { theme: 'website' }),
+      env({ THEMES, THEME_OVERRIDES, GITHUB_TOKEN: TOKEN }),
+    );
+    expect(response.status).toBe(400);
+    expect((await response.json() as { message: string }).message).toContain('Publish first');
+    expect(api.calls).toEqual([]);
+  });
+
   it('tells an invisible private repo apart from a missing branch', async () => {
     // GitHub answers 404 for a private repository a token cannot see, exactly
     // as it does for a branch that is not there.
@@ -326,7 +471,13 @@ describe('GitHub theme source', () => {
     const seen: string[] = [];
     vi.stubGlobal('fetch', async (input: RequestInfo | URL, init: RequestInit = {}) => {
       const url = new URL(typeof input === 'string' ? input : input instanceof URL ? input.href : input.url);
-      if (url.hostname !== 'api.github.com') throw new Error(`Unexpected host ${url.hostname}`);
+      // The connected installation is held by the CMS, so resolving a token asks
+    // the host first. These tests cover the personal-token path, where the
+    // host legitimately has nothing stored.
+    if (url.pathname.startsWith('/__cms/state/')) {
+      return Response.json({ error: 'not_found' }, { status: 404 });
+    }
+    if (url.hostname !== 'api.github.com') throw new Error(`Unexpected host ${url.hostname}`);
       seen.push(String((init.headers as Record<string, string>).authorization));
       return Response.json({ object: { sha: 'head' } });
     });

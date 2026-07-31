@@ -8,6 +8,7 @@
     "theme:watch": "node scripts/sync-theme.mjs --watch",
     "theme:apply": "node scripts/apply-theme.mjs",
     "theme:push": "node scripts/sync-theme.mjs --push",
+    "theme:migrate-prefix": "node scripts/migrate-theme-prefix.mjs",
     "liquid:sync": "node scripts/sync-liquid.mjs",
     "build:preview": "esbuild src/browser/preview.ts --bundle --format=iife --minify --platform=browser --target=es2020 --outfile=views/assets/theme-preview.js",
     "build:assets": "node scripts/build-assets.mjs",
@@ -25,15 +26,15 @@
     "kv:setup:preview": "cms-plugin-kv-setup --preview"
   },
   "dependencies": {
-    "@lionrockjs/worker-cms-plugin": "0.3.3"
+    "@lionrockjs/worker-cms-plugin": "0.3.4"
   },
   "devDependencies": {
-    "@cloudflare/workers-types": "^5.20260726.1",
-    "@types/node": "^26.1.1",
+    "@cloudflare/workers-types": "^5.20260731.1",
+    "@types/node": "^26.1.2",
     "esbuild": "^0.28.1",
     "happy-dom": "^20.11.1",
     "typescript": "^7.0.2",
     "vitest": "^4.1.10",
-    "wrangler": "^4.114.0"
+    "wrangler": "^4.116.0"
   }
 }

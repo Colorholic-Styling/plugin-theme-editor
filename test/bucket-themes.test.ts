@@ -1,7 +1,7 @@
 import { readFile } from 'node:fs/promises';
 import { fileURLToPath } from 'node:url';
 import { afterEach, describe, expect, it, vi } from 'vitest';
-import { clearTenantCache } from '@lionrockjs/worker-cms-plugin';
+import { clearTenantCache, tenantRef } from '@lionrockjs/worker-cms-plugin';
 import worker from '../src/index';
 import { availableThemes, themeStore } from '../src/themes';
 import { isWritable } from '../src/theme/store';
@@ -78,6 +78,11 @@ function themeFiles(id: string): Record<string, string> {
   };
 }
 
+/** Re-keys a theme fixture under a tenant's prefix. */
+function prefixed(prefix: string, files: Record<string, string>): Record<string, string> {
+  return Object.fromEntries(Object.entries(files).map(([key, value]) => [`${prefix}${key}`, value]));
+}
+
 function env(overrides: Partial<PluginEnv> = {}): PluginEnv {
   return {
     VIEWS: views(),
@@ -85,6 +90,9 @@ function env(overrides: Partial<PluginEnv> = {}): PluginEnv {
     PLUGIN_SECRET: SECRET,
     THEME_ID: 'example-theme',
     THEME_SITE_TITLE: 'Preview site',
+    // Tests exercise the pre-multi-tenant install unless they say otherwise;
+    // it is the one that keeps unprefixed keys.
+    CMS_TENANT_LEGACY: '1',
     ...overrides,
   };
 }
@@ -121,6 +129,58 @@ describe('bucket-backed themes', () => {
     // A theme names itself in its own manifest, so the bucket stays the registry.
     expect(themes.find((theme) => theme.id === 'studio-minimal')?.name).toBe('Studio Minimal');
     expect(themes.find((theme) => theme.id === 'example-theme')?.name).toBe('Example Theme');
+  });
+
+  it('keeps two tenants apart even when their themes share an id', async () => {
+    // One bucket serves every connected CMS and R2 has no per-prefix access
+    // control, so the key prefix IS the boundary: without it, two tenants that
+    // clone repositories of the same name overwrite each other's theme.
+    const one = await tenantRef('https://one.example.com');
+    const two = await tenantRef('https://two.example.com');
+    const THEMES = bucket({
+      ...prefixed(`t/${one}/`, themeFiles('portfolio')),
+      ...prefixed(`t/${two}/`, themeFiles('portfolio')),
+      ...prefixed(`t/${two}/`, themeFiles('studio-minimal')),
+    });
+
+    const first = await availableThemes(env({
+      THEMES,
+      CMS_TENANT_REF: one,
+      CMS_TENANT_LEGACY: undefined,
+    }));
+    expect(first.map((theme) => theme.id)).toEqual(['portfolio']);
+
+    const second = await availableThemes(env({
+      THEMES,
+      CMS_TENANT_REF: two,
+      CMS_TENANT_LEGACY: undefined,
+    }));
+    expect(second.map((theme) => theme.id)).toEqual(['portfolio', 'studio-minimal']);
+  });
+
+  it('writes a tenant theme under its own prefix', async () => {
+    const ref = await tenantRef('https://one.example.com');
+    const THEMES = bucket(prefixed(`t/${ref}/`, themeFiles('portfolio')));
+    const pluginEnv = env({ THEMES, CMS_TENANT_REF: ref, CMS_TENANT_LEGACY: undefined });
+    const [theme] = await availableThemes(pluginEnv);
+
+    const store = themeStore(pluginEnv, theme);
+    if (!isWritable(store)) throw new Error('a bucket-backed theme must be writable');
+    await store.write('/templates/page.json', '{}');
+
+    expect(THEMES.store.has(`t/${ref}/portfolio/templates/page.json`)).toBe(true);
+    expect(THEMES.store.has('portfolio/templates/page.json')).toBe(false);
+  });
+
+  it('leaves the pre-multi-tenant install on its unprefixed keys', async () => {
+    // The env-fallback tenant predates the prefix, so its existing themes must
+    // stay reachable — and the reserved `t/` namespace must not look like one.
+    const THEMES = bucket({
+      ...themeFiles('example-theme'),
+      ...prefixed('t/abc123/', themeFiles('someone-elses')),
+    });
+    const themes = await availableThemes(env({ THEMES }));
+    expect(themes.map((theme) => theme.id)).toEqual(['example-theme']);
   });
 
   it('falls back to the staged development theme with no bucket', async () => {
@@ -192,8 +252,10 @@ describe('bucket-backed themes', () => {
 
   it('publishes overrides into the bucket and clears them', async () => {
     const THEMES = bucket(themeFiles('example-theme'));
+    // Overrides are scoped by tenant ref, so the fixture derives the key the
+    // same way the Worker does rather than restating it.
     const THEME_OVERRIDES = kv({
-      'sections:https://cms.example.com:example-theme:page': JSON.stringify({
+      [`sections:${await tenantRef('https://cms.example.com')}:example-theme:page`]: JSON.stringify({
         hidden: ['cta'],
         settings: { hero: { title: '{{ page.blocks[0].eyebrow }}' } },
       }),
@@ -202,7 +264,10 @@ describe('bucket-backed themes', () => {
     const response = await plugin.fetch(
       adminRequest('/__plugin/admin/publish', {
         method: 'POST',
-        headers: { 'content-type': 'application/x-www-form-urlencoded' },
+        headers: {
+          'content-type': 'application/x-www-form-urlencoded',
+          accept: 'application/json',
+        },
         body: new URLSearchParams({ theme: 'example-theme' }),
       }),
       env({ THEMES, THEME_OVERRIDES }),
@@ -210,6 +275,8 @@ describe('bucket-backed themes', () => {
     expect(response.status).toBe(200);
     expect(await response.json()).toMatchObject({
       ok: true,
+      // Nothing to push: this theme did not come from a repository.
+      pushed: false,
       published: [{ template: 'page', changes: ['order: removed cta', expect.stringContaining('hero.title')] }],
     });
 

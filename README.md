@@ -264,19 +264,40 @@ the selection, rather than showing a panel that describes another block.
 
 ### The theme bucket
 
-`THEMES` is the theme library, and the bucket is its root: every top-level
-folder is a theme, so `example-theme/templates/page.json` is that theme's
-page template. The registry is the bucket listing rather than anything compiled
-into this Worker, so adding a theme is uploading a folder. Each theme names
-itself in its own `theme-manifest.json`.
+`THEMES` is the theme library. Themes are stored **per tenant**, under
+`t/<tenant-ref>/<theme-id>/`, so `t/9f86d081884c7d65/example-theme/templates/page.json`
+is that CMS's `example-theme` page template. The registry is the bucket listing
+rather than anything compiled into this Worker, so adding a theme is uploading a
+folder. Each theme names itself in its own `theme-manifest.json`.
 
 ```text
 cms-themes/
-  example-theme/      ← one theme
-    layout/ sections/ snippets/ templates/ assets/
-    theme-manifest.json
-  studio-minimal/          ← another
+  t/9f86d081884c7d65/     ← one connected CMS
+    example-theme/        ← one of its themes
+      layout/ sections/ snippets/ templates/ assets/
+      theme-manifest.json
+    studio-minimal/       ← another
+  t/3b7c9a12ef4d5061/     ← a different CMS, its own themes
 ```
+
+The prefix is the isolation boundary, not a naming convenience. One bucket
+serves every connected CMS and R2 has no per-prefix access control, so without
+it two tenants that clone repositories of the same name write to the same
+folder and overwrite each other. It is derived inside `R2ThemeStore` from the
+tenant the request authenticated as — never from anything a caller supplies —
+which keeps the boundary in one place. `t` is reserved and cannot be a theme id.
+
+A single CMS configured the pre-multi-tenant way (`CMS_URL` + `PLUGIN_SECRET`
+rather than the `TENANTS` registry) keeps its unprefixed keys, so existing
+installs need no migration. To move themes into a tenant prefix after
+connecting through the registry:
+
+```bash
+npm run theme:migrate-prefix -- --tenant=https://cms.example.com --themes=example-theme --dry-run
+```
+
+Drop `--dry-run` to copy, add `--remote` for the deployed bucket. Nothing is
+deleted: confirm the themes still load, then remove the originals yourself.
 
 A bucket is what makes the theme *writable*. An asset binding is immutable at
 runtime, which is why the editor keeps overrides at all; `themeStore()` hands
@@ -336,9 +357,21 @@ theme.
 
 The dashboard supports a Shopify-style **Connect GitHub** flow. GitHub handles
 sign-in and lets the installer grant either all repositories or only selected
-repositories. The plugin stores the installation id and account label in a
-dedicated tenant-scoped KV namespace; it never stores the temporary GitHub user
-token. Clone and push mint a new one-hour installation token as needed.
+repositories. The temporary GitHub user token is never stored; clone and push
+mint a new one-hour installation token as needed.
+
+The installation id and account label are stored **on the CMS that connected
+them**, as plugin state under the key `github.connection` (see
+`/__cms/state` in the host). That is deliberate: one plugin Worker serves many
+CMS hosts, so a record kept here would outlive the host it describes, stay
+invisible to that host's admins, and be readable by whoever operates the
+plugin. The App's own credentials — private key, client secret, state secret —
+are plugin-global identity and stay in this Worker's secrets. Nothing secret
+goes into plugin state; the host keeps it in D1, which is plaintext at rest.
+
+Installs made before this moved host-side are read once from the legacy
+`GITHUB_CONNECTIONS` KV namespace and written through to the host, so that
+namespace drains as tenants use the editor and can then be unbound.
 
 Create a GitHub App under the account or organisation that will own the
 integration:
@@ -360,13 +393,8 @@ integration:
    secret. Leave **Redirect on update** off; **Manage repositories** opens
    GitHub in a new tab and the dashboard sees the new selection when reloaded.
 
-Provision the connection registry:
-
-```bash
-npm run kv:setup -- --binding=GITHUB_CONNECTIONS
-```
-
-Put the non-secret App identity in `[vars]`:
+No KV namespace is needed for the connection — the CMS holds it. Put the
+non-secret App identity in `[vars]`:
 
 ```toml
 [vars]
@@ -455,6 +483,35 @@ theme itself.
 
 It needs `npm run dev` running (it reads `PLUGIN_SECRET` from `.dev.vars`) and
 requires `THEME_SOURCE_DIR`; `PLUGIN_URL` and `THEME_ID` choose the target.
+
+#### Publish — the deployed equivalent
+
+A bucket-backed theme needs no checkout: **Publish** in the editor does the same
+merge in the Worker. For a theme cloned from GitHub it also commits, so one
+button means "write this into the theme and push it".
+
+The order is load-bearing: compute every new file, **commit**, write the bucket,
+then clear the override layer. Writing the bucket first would be unrecoverable —
+replayed against an already-applied template the override yields no changes, so
+a publish that failed to push could never be retried and the edits would be
+stranded as applied locally but never committed. A failure anywhere leaves the
+edits in the editor.
+
+Only templates that actually changed are committed; the rest of the branch
+carries over through `base_tree`. The commit message lists the changes
+themselves (`hero.title: (unset) → page.title`), and a commit whose tree matches
+the branch head is skipped rather than added as an empty commit — which is what
+makes a retry after a partial failure safe. Commits go straight to the branch
+recorded in `theme-manifest.json`.
+
+A theme with no repository publishes to the bucket and reports `pushed: false`;
+that is not a failure, since the bucket is what serves the site. A theme that
+*has* one must reach it, so a GitHub failure fails the whole publish rather than
+silently leaving the repository behind.
+
+**Push to GitHub** on the dashboard commits what the bucket already holds, so it
+refuses while any editor changes are still unpublished — pushing then would put
+a copy of the theme *without* them into the repository and look like it worked.
 
 ### Section visibility
 

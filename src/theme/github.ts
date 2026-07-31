@@ -182,6 +182,12 @@ export class GitHubClient {
       },
     );
 
+    // Identical tree means the branch already says what these files say. Making
+    // an empty commit anyway would clutter the history, and — because publish
+    // commits before it writes anything else — turn every retry after a partial
+    // failure into another no-op commit.
+    if (tree.sha === head.treeSha) return head.sha;
+
     const commit = await this.call<{ sha: string }>(
       `/repos/${repo.owner}/${repo.repo}/git/commits`,
       {

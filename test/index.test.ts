@@ -1,7 +1,7 @@
 import { readFile } from 'node:fs/promises';
 import { fileURLToPath } from 'node:url';
 import { afterEach, describe, expect, it, vi } from 'vitest';
-import { clearTenantCache, type CmsPage } from '@lionrockjs/worker-cms-plugin';
+import { clearTenantCache, tenantRef, type CmsPage } from '@lionrockjs/worker-cms-plugin';
 import { hostLiquid } from './host-liquid';
 import worker from '../src/index';
 import { applyEditorFields, editorFields } from '../src/editor-model';
@@ -37,16 +37,28 @@ function views(): Fetcher {
   } as Fetcher;
 }
 
+const CMS_ORIGIN = 'https://cms.example.com';
+
 function env(overrides: Partial<PluginEnv> = {}): PluginEnv {
   return {
     VIEWS: views(),
-    CMS_URL: 'https://cms.example.com',
+    CMS_URL: CMS_ORIGIN,
     PLUGIN_SECRET: SECRET,
     THEME_ID: 'example-theme',
     THEME_NAME: 'Development theme',
     THEME_SITE_TITLE: 'Preview site',
     ...overrides,
   };
+}
+
+/**
+ * Override keys are scoped by tenant ref, the same handle the plugin derives
+ * from the authenticated tenant. Computed here rather than written out, so a
+ * change to the derivation shows up as a failing assertion instead of fixtures
+ * that quietly stop matching what the Worker reads.
+ */
+async function overrideKey(themeId: string, templateId: string): Promise<string> {
+  return `sections:${await tenantRef(CMS_ORIGIN)}:${themeId}:${templateId}`;
 }
 
 /**
@@ -758,13 +770,13 @@ describe('theme editor routes', () => {
 
   it('exposes the override layer for the tooling that writes the theme', async () => {
     const overrides = kv({
-      'sections:https://cms.example.com:example-theme:page': JSON.stringify({
+      [await overrideKey('example-theme', 'page')]: JSON.stringify({
         hidden: ['cta'],
         settings: { hero: { title: '{{ page.blocks[0].eyebrow }}' } },
       }),
       // A template with nothing overridden is left out entirely, so the writer
       // has no reason to touch its file.
-      'sections:https://cms.example.com:example-theme:message': JSON.stringify({
+      [await overrideKey('example-theme', 'message')]: JSON.stringify({
         hidden: [],
         settings: {},
       }),
@@ -793,7 +805,7 @@ describe('theme editor routes', () => {
       env({ THEME_OVERRIDES: overrides }),
     );
     expect(await cleared.json()).toMatchObject({ ok: true, template: 'page' });
-    expect(overrides.store.has('sections:https://cms.example.com:example-theme:page')).toBe(false);
+    expect(overrides.store.has(await overrideKey('example-theme', 'page'))).toBe(false);
   });
 
   it('refuses to clear a template the theme does not have', async () => {
@@ -838,7 +850,7 @@ describe('theme editor routes', () => {
       adminRequest('/__plugin/admin/editor?theme=example-theme&template=page&page_id=12&language=en'),
       env({
         THEME_OVERRIDES: kv({
-          'sections:https://cms.example.com:example-theme:page': JSON.stringify({ hidden: ['hero'] }),
+          [await overrideKey('example-theme', 'page')]: JSON.stringify({ hidden: ['hero'] }),
         }),
       }),
     );
@@ -859,6 +871,44 @@ describe('theme editor routes', () => {
     // Hidden sections stay listed, offering the way back.
     expect(html).toContain('>Show<');
     expect(html).toContain('· hidden');
+  });
+
+  it('offers Publish only while there is something unpublished to publish', async () => {
+    // An asset-bundle theme cannot be written at runtime, so it never offers
+    // the button — `npm run theme:apply` does that job where it is checked out.
+    const withPending = await renderEditorSection({
+      canPublish: true,
+      hasPending: true,
+      pendingTemplates: 2,
+      publishAction: '/admin/plugins/theme-editor/publish',
+      themeId: 'website',
+      publishTarget: 'Example-Org/website@main',
+    });
+    expect(withPending).toContain('action="/admin/plugins/theme-editor/publish"');
+    expect(withPending).toContain('Publish &amp; push');
+    // The button names where the commit lands, so it is not a surprise.
+    expect(withPending).toContain('Example-Org/website@main');
+    expect(withPending).toContain('data-confirm');
+
+    // A bucket theme with no repository publishes, but pushes nowhere.
+    const bucketOnly = await renderEditorSection({
+      canPublish: true,
+      hasPending: true,
+      pendingTemplates: 1,
+      publishAction: '/admin/plugins/theme-editor/publish',
+      themeId: 'local',
+      publishTarget: '',
+    });
+    expect(bucketOnly).toContain('action="/admin/plugins/theme-editor/publish"');
+    expect(bucketOnly).toContain('Publish to the theme bucket');
+    expect(bucketOnly).not.toContain('push');
+
+    const nothingPending = await renderEditorSection({
+      canPublish: true,
+      hasPending: false,
+      publishAction: '/admin/plugins/theme-editor/publish',
+    });
+    expect(nothingPending).not.toContain('action="/admin/plugins/theme-editor/publish"');
   });
 
   it('lists every section the template declares, not only the ones the page has blocks for', async () => {
@@ -1003,7 +1053,7 @@ describe('theme editor routes', () => {
       adminRequest('/__plugin/admin/preview/data?theme=example-theme&template=page&page_id=12&language=en&block=0'),
       env({
         THEME_OVERRIDES: kv({
-          'sections:https://cms.example.com:example-theme:page': JSON.stringify({ hidden: ['cta'] }),
+          [await overrideKey('example-theme', 'page')]: JSON.stringify({ hidden: ['cta'] }),
         }),
       }),
     );

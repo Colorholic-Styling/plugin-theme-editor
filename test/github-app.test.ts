@@ -10,6 +10,7 @@ import {
   vi,
 } from 'vitest';
 import {
+  clearPluginStateCache,
   clearTenantCache,
   tenantRef,
 } from '@lionrockjs/worker-cms-plugin';
@@ -128,16 +129,55 @@ function githubConnection(): string {
   });
 }
 
+/**
+ * Stands in for the CMS's `/__cms/state` store — the connected installation now
+ * belongs to the host, not to this Worker, so these tests assert against what
+ * the host was asked to keep rather than a KV namespace here.
+ */
+function cmsState(seed: Record<string, string> = {}) {
+  const store = new Map(Object.entries(seed));
+  return {
+    store,
+    /** Answers a state request the way the host does, or null if not one. */
+    handle(url: URL, method: string, body: unknown): Response | null {
+      if (!url.pathname.startsWith('/__cms/state/')) return null;
+      const key = decodeURIComponent(url.pathname.slice('/__cms/state/'.length));
+      if (method === 'PUT') {
+        store.set(key, JSON.stringify((body as { value: unknown }).value));
+        return Response.json({ ok: true, key });
+      }
+      if (method === 'DELETE') {
+        store.delete(key);
+        return Response.json({ ok: true, key });
+      }
+      const value = store.get(key);
+      return value === undefined
+        ? Response.json({ error: 'not_found' }, { status: 404 })
+        : Response.json({ key, value });
+    },
+  };
+}
+
+const CONNECTION_KEY = 'github.connection';
+
 function mockInstallationApi(options: {
   includeUserInstallation?: boolean;
   includeRepositories?: boolean;
+  /** The host's state store; defaults to an empty one (nothing connected). */
+  state?: ReturnType<typeof cmsState>;
 } = {}): Array<{ url: URL; method: string; authorization: string; body: unknown }> {
   const calls: Array<{ url: URL; method: string; authorization: string; body: unknown }> = [];
+  const state = options.state ?? cmsState();
   vi.stubGlobal('fetch', async (input: RequestInfo | URL, init: RequestInit = {}) => {
     const url = new URL(typeof input === 'string' ? input : input instanceof URL ? input.href : input.url);
     const method = init.method ?? 'GET';
     const headers = new Headers(init.headers);
     const body = init.body ? JSON.parse(String(init.body)) : undefined;
+
+    // Kept out of `calls`, which exists to pin what was sent to GitHub.
+    const hosted = state.handle(url, method, body);
+    if (hosted) return hosted;
+
     calls.push({ url, method, authorization: headers.get('authorization') ?? '', body });
 
     if (url.hostname === 'github.com' && url.pathname === '/login/oauth/access_token') {
@@ -192,11 +232,15 @@ async function renderThemes(data: Record<string, unknown>): Promise<string> {
 afterEach(() => {
   vi.unstubAllGlobals();
   clearTenantCache();
+  // State reads are cached per isolate; without this a connection stored by
+  // one test would still be visible to the next.
+  clearPluginStateCache();
 });
 
 describe('GitHub App connection', () => {
   it('starts a signed tenant-aware installation flow from the dashboard', async () => {
     const pluginEnv = env();
+    mockInstallationApi();
     const dashboard = await plugin.fetch(adminRequest('/__plugin/admin'), pluginEnv);
     const data = await dashboard.json() as Record<string, unknown>;
     expect(data.githubAppConfigured).toBe(true);
@@ -220,13 +264,13 @@ describe('GitHub App connection', () => {
   });
 
   it('verifies the installer and stores only installation metadata', async () => {
-    const connections = kv();
-    const pluginEnv = env({ GITHUB_CONNECTIONS: connections });
+    const hosted = cmsState();
+    const pluginEnv = env();
     const started = await plugin.fetch(adminRequest('/__plugin/admin/github/connect', {
       method: 'POST',
     }), pluginEnv);
     const state = new URL(started.headers.get('location') as string).searchParams.get('state');
-    const calls = mockInstallationApi();
+    const calls = mockInstallationApi({ state: hosted });
 
     const callback = await plugin.fetch(new Request(
       `https://plugin.example.com/__plugin/github/callback`
@@ -242,8 +286,9 @@ describe('GitHub App connection', () => {
       'POST /login/oauth/access_token',
       'GET /user/installations',
     ]);
-    expect(connections.store.size).toBe(1);
-    const stored = [...connections.store.values()][0];
+    // The record went to the CMS that owns it, not into this Worker's storage.
+    expect(hosted.store.size).toBe(1);
+    const stored = hosted.store.get(CONNECTION_KEY) as string;
     expect(JSON.parse(stored)).toMatchObject({
       installationId: INSTALLATION_ID,
       accountLogin: 'Acme',
@@ -251,12 +296,11 @@ describe('GitHub App connection', () => {
     });
     expect(stored).not.toContain(USER_TOKEN);
     expect(stored).not.toContain('client-secret');
-    expect([...connections.store.keys()][0]).not.toContain('cms.example.com');
   });
 
   it('rejects a tampered state and an installation the GitHub user cannot access', async () => {
-    const connections = kv();
-    const pluginEnv = env({ GITHUB_CONNECTIONS: connections });
+    const hosted = cmsState();
+    const pluginEnv = env();
     const started = await plugin.fetch(adminRequest('/__plugin/admin/github/connect', {
       method: 'POST',
     }), pluginEnv);
@@ -269,7 +313,7 @@ describe('GitHub App connection', () => {
     ), pluginEnv);
     expect(invalid.status).toBe(400);
 
-    mockInstallationApi({ includeUserInstallation: false });
+    mockInstallationApi({ includeUserInstallation: false, state: hosted });
     const inaccessible = await plugin.fetch(new Request(
       `https://plugin.example.com/__plugin/github/callback?code=x`
       + `&installation_id=${INSTALLATION_ID}&state=${encodeURIComponent(state)}`,
@@ -277,14 +321,12 @@ describe('GitHub App connection', () => {
     expect(inaccessible.status).toBe(302);
     expect(decodeURIComponent(inaccessible.headers.get('location') as string))
       .toContain('cannot access that App installation');
-    expect(connections.store.size).toBe(0);
+    expect(hosted.store.size).toBe(0);
   });
 
   it('lists granted repositories and renders the add-theme form', async () => {
-    const ref = await tenantRef('https://cms.example.com');
-    const connections = kv({ [`github:${ref}`]: githubConnection() });
-    const pluginEnv = env({ GITHUB_CONNECTIONS: connections });
-    mockInstallationApi();
+    const pluginEnv = env();
+    mockInstallationApi({ state: cmsState({ [CONNECTION_KEY]: githubConnection() }) });
 
     const dashboard = await plugin.fetch(adminRequest('/__plugin/admin'), pluginEnv);
     const data = await dashboard.json() as Record<string, unknown>;
@@ -307,8 +349,8 @@ describe('GitHub App connection', () => {
   });
 
   it('does not expose private repository metadata to a view-only CMS user', async () => {
-    const ref = await tenantRef('https://cms.example.com');
-    const connections = kv({ [`github:${ref}`]: githubConnection() });
+    // Not even the connection lookup should happen: a view-only user gets no
+    // GitHub detail, so nothing is asked of GitHub or of the host.
     vi.stubGlobal('fetch', vi.fn(async () => {
       throw new Error('A view-only dashboard must not call GitHub');
     }));
@@ -319,7 +361,7 @@ describe('GitHub App connection', () => {
         {},
         { id: '8', role: 'viewer', permissions: ['theme-editor:view'] },
       ),
-      env({ GITHUB_CONNECTIONS: connections }),
+      env(),
     );
     expect(dashboard.status).toBe(200);
     const data = await dashboard.json() as Record<string, unknown>;
@@ -330,11 +372,9 @@ describe('GitHub App connection', () => {
   });
 
   it('uses a short-lived installation token to clone the selected repository', async () => {
-    const ref = await tenantRef('https://cms.example.com');
-    const connections = kv({ [`github:${ref}`]: githubConnection() });
+    const hosted = cmsState({ [CONNECTION_KEY]: githubConnection() });
     const themes = bucket();
     const pluginEnv = env({
-      GITHUB_CONNECTIONS: connections,
       THEMES: themes,
       // A connected App must win rather than silently widening access through
       // a deployment-wide personal token.
@@ -345,6 +385,8 @@ describe('GitHub App connection', () => {
     vi.stubGlobal('fetch', async (input: RequestInfo | URL, init: RequestInit = {}) => {
       const url = new URL(typeof input === 'string' ? input : input instanceof URL ? input.href : input.url);
       const headers = new Headers(init.headers);
+      const hostedResponse = hosted.handle(url, init.method ?? 'GET', undefined);
+      if (hostedResponse) return hostedResponse;
       if (url.pathname === `/app/installations/${INSTALLATION_ID}/access_tokens`) {
         expect(headers.get('authorization')).toMatch(/^Bearer [^.]+\.[^.]+\.[^.]+$/);
         return Response.json({ token: INSTALLATION_TOKEN });
@@ -400,19 +442,68 @@ describe('GitHub App connection', () => {
   });
 
   it('disconnects only this CMS connection', async () => {
+    // Each host holds its own record, so a disconnect can only ever reach the
+    // CMS that asked for it. The pre-migration KV is keyed by tenant ref, and
+    // only this tenant's entry may be removed from it.
     const ref = await tenantRef('https://cms.example.com');
     const other = await tenantRef('https://other.example.com');
-    const connections = kv({
+    const legacy = kv({
       [`github:${ref}`]: githubConnection(),
       [`github:${other}`]: githubConnection(),
     });
+    const hosted = cmsState({ [CONNECTION_KEY]: githubConnection() });
+    mockInstallationApi({ state: hosted });
+
     const response = await plugin.fetch(adminRequest('/__plugin/admin/github/disconnect', {
       method: 'POST',
       headers: { accept: 'application/json' },
-    }), env({ GITHUB_CONNECTIONS: connections }));
+    }), env({ GITHUB_CONNECTIONS: legacy }));
 
     expect(response.status).toBe(200);
-    expect(connections.store.has(`github:${ref}`)).toBe(false);
-    expect(connections.store.has(`github:${other}`)).toBe(true);
+    expect(hosted.store.has(CONNECTION_KEY)).toBe(false);
+    expect(legacy.store.has(`github:${ref}`)).toBe(false);
+    expect(legacy.store.has(`github:${other}`)).toBe(true);
+  });
+
+  it('adopts a pre-migration KV connection and hands it to the host', async () => {
+    // Installs made before the record moved host-side keep working, and the
+    // first read migrates them, so the old namespace drains on its own.
+    const ref = await tenantRef('https://cms.example.com');
+    const legacy = kv({ [`github:${ref}`]: githubConnection() });
+    const hosted = cmsState();
+    mockInstallationApi({ state: hosted });
+
+    const dashboard = await plugin.fetch(
+      adminRequest('/__plugin/admin'),
+      env({ GITHUB_CONNECTIONS: legacy }),
+    );
+    const data = await dashboard.json() as Record<string, unknown>;
+    expect(data.githubConnected).toBe(true);
+    expect(data.githubAccount).toBe('Acme');
+    expect(JSON.parse(hosted.store.get(CONNECTION_KEY) as string)).toMatchObject({
+      installationId: INSTALLATION_ID,
+      accountLogin: 'Acme',
+    });
+  });
+
+  it('keeps using a connection the host cannot yet be told about', async () => {
+    // A CMS that rejects the write must not read as "never connected": the
+    // installation still exists, so the editor keeps working and retries later.
+    const ref = await tenantRef('https://cms.example.com');
+    const legacy = kv({ [`github:${ref}`]: githubConnection() });
+    const unwritable = cmsState();
+    unwritable.handle = (url: URL, method: string) => {
+      if (!url.pathname.startsWith('/__cms/state/')) return null;
+      return method === 'PUT'
+        ? Response.json({ error: 'unavailable' }, { status: 503 })
+        : Response.json({ error: 'not_found' }, { status: 404 });
+    };
+    mockInstallationApi({ state: unwritable });
+
+    const dashboard = await plugin.fetch(
+      adminRequest('/__plugin/admin'),
+      env({ GITHUB_CONNECTIONS: legacy }),
+    );
+    expect((await dashboard.json() as Record<string, unknown>).githubConnected).toBe(true);
   });
 });

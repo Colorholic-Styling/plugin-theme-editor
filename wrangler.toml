@@ -30,9 +30,13 @@ CMS_URL = "http://localhost:8787"
 binding = "THEME_OVERRIDES"
 id = "REPLACE_WITH_THEME_EDITOR_OVERRIDES_KV_ID"
 
-# Tenant-scoped GitHub App installation metadata. It stores installation ids,
-# never GitHub access tokens. Provision with:
-#   npm run kv:setup -- --binding=GITHUB_CONNECTIONS
+# LEGACY, read-only. GitHub App installation metadata now lives on the CMS that
+# owns it (plugin state key `github.connection`), because a record kept here
+# outlives the host it describes and is invisible to that host's admins. This
+# namespace is still read once per tenant so pre-migration installs keep
+# working; each such read writes the record through to the host, so the
+# namespace drains as tenants use the editor. Unbind it once every connected
+# CMS shows GitHub as connected.
 [[kv_namespaces]]
 binding = "GITHUB_CONNECTIONS"
 id = "REPLACE_WITH_THEME_EDITOR_GITHUB_CONNECTIONS_KV_ID"

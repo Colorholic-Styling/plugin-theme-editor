@@ -1,9 +1,10 @@
 import {
+  pluginState,
   tenantById,
   tenantClientEnv,
   type Tenant,
 } from '@lionrockjs/worker-cms-plugin';
-import { ADMIN_BASE } from '../constants';
+import { ADMIN_BASE, PLUGIN_ID } from '../constants';
 import type { PluginEnv } from '../types';
 import { GitHubError } from './github';
 
@@ -11,6 +12,14 @@ const API = 'https://api.github.com';
 const API_VERSION = '2022-11-28';
 const CALLBACK_PATH = '/__plugin/github/callback';
 const STATE_LIFETIME_SECONDS = 10 * 60;
+/**
+ * Where the connected installation lives on the CMS that owns it. It is the
+ * host's record, not this Worker's: one plugin Worker serves many CMS hosts,
+ * so a copy kept here would outlive the host, stay invisible to its admins,
+ * and be readable by whoever operates the plugin.
+ */
+const CONNECTION_STATE_KEY = 'github.connection';
+/** Pre-migration KV key prefix, still read once per tenant. See getGitHubConnection. */
 const CONNECTION_KEY_PREFIX = 'github:';
 
 interface GitHubAppConfig {
@@ -78,10 +87,12 @@ export interface GitHubAccess {
 }
 
 /**
- * The installation flow is available only when every credential and its
- * tenant-scoped connection store are present. A partially configured App is
- * reported rather than silently presenting a Connect button that cannot
- * finish its callback.
+ * The installation flow is available only when every credential is present. A
+ * partially configured App is reported rather than silently presenting a
+ * Connect button that cannot finish its callback.
+ *
+ * Only credentials are listed: the connection itself is stored on the CMS
+ * (see CONNECTION_STATE_KEY), which every authenticated request already has.
  */
 export function githubAppConfiguration(env: PluginEnv): {
   config: GitHubAppConfig | null;
@@ -102,7 +113,6 @@ export function githubAppConfiguration(env: PluginEnv): {
     !values.clientId && 'GITHUB_APP_CLIENT_ID',
     !values.clientSecret && 'GITHUB_APP_CLIENT_SECRET',
     values.stateSecret.length < 32 && 'GITHUB_APP_STATE_SECRET (at least 32 characters)',
-    !env.GITHUB_CONNECTIONS && 'GITHUB_CONNECTIONS',
   ].filter((value): value is string => Boolean(value));
   const attempted = Object.values(values).some(Boolean);
 
@@ -189,14 +199,26 @@ export async function handleGitHubAppCallback(
       throw new GitHubError('The returned installation belongs to a different GitHub App.', 403);
     }
 
-    await putGitHubConnection(env, {
-      installationId,
-      accountLogin: installation.account?.login?.trim() || 'GitHub account',
-      accountType: installation.account?.type?.trim() || 'Account',
-      repositorySelection: installation.repository_selection === 'all' ? 'all' : 'selected',
-      manageUrl: safeGitHubUrl(installation.html_url),
-      connectedAt: new Date().toISOString(),
-    });
+    // The connection is recorded on the CMS, so this last step can fail after
+    // GitHub has already installed the App. Say so plainly: retrying Connect is
+    // safe, because the installation id is re-derived from GitHub rather than
+    // taken from the callback URL, so a second run records the same thing.
+    try {
+      await putGitHubConnection(env, {
+        installationId,
+        accountLogin: installation.account?.login?.trim() || 'GitHub account',
+        accountType: installation.account?.type?.trim() || 'Account',
+        repositorySelection: installation.repository_selection === 'all' ? 'all' : 'selected',
+        manageUrl: safeGitHubUrl(installation.html_url),
+        connectedAt: new Date().toISOString(),
+      });
+    } catch (error) {
+      console.error('Could not record the GitHub connection on the CMS:', error);
+      throw new GitHubError(
+        'The GitHub App was installed, but this CMS could not record the connection. '
+        + 'Try Connect again — the installation is reused, not duplicated.',
+      );
+    }
     return redirectToTenant(
       tenant,
       `Connected GitHub as ${installation.account?.login?.trim() || 'the selected account'}.`,
@@ -252,12 +274,18 @@ export async function githubAppDashboard(env: PluginEnv): Promise<GitHubAppDashb
   }
 }
 
-/** Resolves the tenant's App installation first, then the legacy PAT fallback. */
+/**
+ * Resolves the tenant's App installation first, then the legacy PAT fallback.
+ *
+ * Credentials are checked before the connection is looked up: without them no
+ * installation token can be minted whatever the host has stored, so asking is
+ * pointless — and this keeps a PAT-only install from depending on the CMS
+ * being reachable just to read "nothing is connected".
+ */
 export async function githubAccess(env: PluginEnv): Promise<GitHubAccess | null> {
-  const connection = await getGitHubConnection(env);
-  if (connection) {
-    const { config, message } = githubAppConfiguration(env);
-    if (!config) throw new GitHubError(message || 'The GitHub App is not configured.');
+  const { config } = githubAppConfiguration(env);
+  const connection = config ? await getGitHubConnection(env) : null;
+  if (config && connection) {
     return {
       token: await installationToken(config, connection.installationId),
       source: 'app',
@@ -268,15 +296,49 @@ export async function githubAccess(env: PluginEnv): Promise<GitHubAccess | null>
 }
 
 export async function disconnectGitHubApp(env: PluginEnv): Promise<void> {
-  const key = connectionKey(env);
-  if (!env.GITHUB_CONNECTIONS || !key) return;
-  await env.GITHUB_CONNECTIONS.delete(key);
+  await pluginState(env, PLUGIN_ID).delete(CONNECTION_STATE_KEY);
+  // Also clear any pre-migration copy, so disconnecting cannot be undone by the
+  // legacy read below resurrecting the old record on the next request.
+  const key = legacyConnectionKey(env);
+  if (env.GITHUB_CONNECTIONS && key) await env.GITHUB_CONNECTIONS.delete(key);
 }
 
+/**
+ * The connected installation, from the host that owns it.
+ *
+ * Installs made before this moved host-side still have their record in the
+ * plugin's own KV; those are read once and written through to the host, so the
+ * old namespace drains as tenants use the editor and can then be unbound.
+ */
 export async function getGitHubConnection(env: PluginEnv): Promise<GitHubConnection | null> {
-  const key = connectionKey(env);
+  const stored = await pluginState(env, PLUGIN_ID).get<unknown>(CONNECTION_STATE_KEY);
+  const hosted = parseConnection(stored);
+  if (hosted) return hosted;
+
+  const legacy = parseConnection(await readLegacyConnection(env));
+  if (!legacy) return null;
+  // Best-effort: a host that cannot take the write still gets to use the
+  // connection it already has, and the next request tries again.
+  await putGitHubConnection(env, legacy).catch((error: unknown) => {
+    console.warn('Could not migrate the GitHub connection to the CMS:', error);
+  });
+  return legacy;
+}
+
+async function readLegacyConnection(env: PluginEnv): Promise<unknown> {
+  const key = legacyConnectionKey(env);
   if (!env.GITHUB_CONNECTIONS || !key) return null;
-  const raw = await env.GITHUB_CONNECTIONS.get(key, 'json').catch(() => null) as unknown;
+  return env.GITHUB_CONNECTIONS.get(key, 'json').catch(() => null);
+}
+
+/** Pre-migration KV key: `github:<tenant ref>`. */
+function legacyConnectionKey(env: PluginEnv): string {
+  const ref = env.CMS_TENANT_REF?.trim() ?? '';
+  return ref ? `${CONNECTION_KEY_PREFIX}${ref}` : '';
+}
+
+/** Validates a stored record; anything malformed reads as "not connected". */
+function parseConnection(raw: unknown): GitHubConnection | null {
   if (!raw || typeof raw !== 'object' || Array.isArray(raw)) return null;
   const value = raw as Partial<GitHubConnection>;
   if (
@@ -293,17 +355,8 @@ export async function getGitHubConnection(env: PluginEnv): Promise<GitHubConnect
   return value as GitHubConnection;
 }
 
-function connectionKey(env: PluginEnv): string {
-  const ref = env.CMS_TENANT_REF?.trim() ?? '';
-  return ref ? `${CONNECTION_KEY_PREFIX}${ref}` : '';
-}
-
 async function putGitHubConnection(env: PluginEnv, connection: GitHubConnection): Promise<void> {
-  const key = connectionKey(env);
-  if (!env.GITHUB_CONNECTIONS || !key) {
-    throw new GitHubError('The GITHUB_CONNECTIONS KV namespace is not available.');
-  }
-  await env.GITHUB_CONNECTIONS.put(key, JSON.stringify(connection));
+  await pluginState(env, PLUGIN_ID).put(CONNECTION_STATE_KEY, connection);
 }
 
 async function exchangeUserCode(config: GitHubAppConfig, code: string): Promise<string> {

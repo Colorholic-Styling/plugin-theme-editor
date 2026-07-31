@@ -5,6 +5,7 @@ import {
   AssetThemeStore,
   bucketThemeIds,
   R2ThemeStore,
+  type ThemeScope,
   type ThemeStore,
 } from './theme/store';
 
@@ -32,11 +33,11 @@ export interface ThemeDefinition {
 export async function availableThemes(env: PluginEnv): Promise<ThemeDefinition[]> {
   if (!env.THEMES) return availableDevelopmentTheme(env);
 
-  const ids = await bucketThemeIds(env.THEMES);
+  const ids = await bucketThemeIds(env.THEMES, themeScope(env));
   if (ids.length === 0) return availableDevelopmentTheme(env);
 
   const themes = await Promise.all(ids.map(async (id) => {
-    const meta = await themeMetadata(new R2ThemeStore(env.THEMES as R2Bucket, id));
+    const meta = await themeMetadata(new R2ThemeStore(env.THEMES as R2Bucket, id, themeScope(env)));
     return {
       id,
       name: meta.name || humanize(id),
@@ -68,10 +69,22 @@ export async function themeFromId(
   return themes.find((theme) => theme.id === requestedId) ?? null;
 }
 
+/**
+ * Which tenant's themes this request may see. Derived from the tenant the host
+ * request authenticated as, so a theme can never be addressed across tenants:
+ * the ref is not a caller-supplied value.
+ */
+export function themeScope(env: PluginEnv): ThemeScope {
+  return {
+    tenantRef: env.CMS_TENANT_REF?.trim() || undefined,
+    legacy: env.CMS_TENANT_LEGACY === '1',
+  };
+}
+
 /** The store a theme reads through, writable only when it lives in the bucket. */
 export function themeStore(env: PluginEnv, theme: ThemeDefinition): ThemeStore {
   return theme.storage === 'bucket' && env.THEMES
-    ? new R2ThemeStore(env.THEMES, theme.id)
+    ? new R2ThemeStore(env.THEMES, theme.id, themeScope(env))
     : new AssetThemeStore(env.VIEWS, theme.assetPrefix);
 }
 
