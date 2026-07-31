@@ -120,8 +120,16 @@ export async function handleThemeEditorAdmin(
   // Git Data API: a Worker has no git binary, and this makes a push atomic.
   if (section === 'github') {
     if (!access.canEdit) return forbidden();
+    // Starting the GitHub installation is navigation, not a mutation. Keep it
+    // outside the POST-only actions so the dashboard can use a link: a form
+    // submission that redirects to github.com is blocked by the CMS's
+    // `form-action 'self'` policy.
+    if (segments[1] === 'connect') {
+      return request.method === 'GET' || request.method === 'POST'
+        ? connectGitHubApp(request, env)
+        : redirect(ADMIN_BASE);
+    }
     if (request.method !== 'POST') return redirect(ADMIN_BASE);
-    if (segments[1] === 'connect') return connectGitHubApp(request, env);
     if (segments[1] === 'disconnect') return disconnectGitHub(request, env);
     return segments[1] === 'push'
       ? pushThemeToGitHub(request, env)

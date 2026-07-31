@@ -205,11 +205,13 @@ describe('GitHub App connection', () => {
 
     const html = await renderThemes(data);
     expect(html).toContain('Connect GitHub');
-    expect(html).toContain('action="/admin/plugins/theme-editor/github/connect"');
+    expect(html).toContain('href="/admin/plugins/theme-editor/github/connect"');
+    expect(html).not.toContain('action="/admin/plugins/theme-editor/github/connect"');
 
-    const response = await plugin.fetch(adminRequest('/__plugin/admin/github/connect', {
-      method: 'POST',
-    }), pluginEnv);
+    const response = await plugin.fetch(
+      adminRequest('/__plugin/admin/github/connect'),
+      pluginEnv,
+    );
     expect(response.status).toBe(302);
     const location = new URL(response.headers.get('location') as string);
     expect(location.origin).toBe('https://github.com');
