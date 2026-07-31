@@ -18,8 +18,8 @@ CMS_URL = "https://cms.eventuai.com"
 # GitHub App identity values are safe as vars. Configure the private key,
 # client secret, and state secret with `wrangler secret put`; see README.
 GITHUB_APP_ID = "4438299"
-# GITHUB_APP_SLUG = "eventuai-theme-editor"
-# GITHUB_APP_CLIENT_ID = "Iv23li3rHFYFrjmqLsk5"
+GITHUB_APP_SLUG = "eventuai-theme-editor"
+GITHUB_APP_CLIENT_ID = "Iv23li3rHFYFrjmqLsk5"
 
 
 # Section visibility is a per-template decision, so those overrides need their
