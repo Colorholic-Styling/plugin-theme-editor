@@ -82,7 +82,7 @@ export async function bucketThemeIds(bucket: R2Bucket): Promise<string[]> {
   return ids.sort();
 }
 
-function contentTypeFor(path: string): string {
+export function contentTypeFor(path: string): string {
   if (path.endsWith('.json')) return 'application/json';
   if (path.endsWith('.css')) return 'text/css';
   if (path.endsWith('.js')) return 'text/javascript';
@@ -138,4 +138,3 @@ export class AssetThemeStore implements ThemeStore {
     return `${this.prefix}${normalized}`;
   }
 }
-

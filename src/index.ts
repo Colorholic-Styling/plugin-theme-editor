@@ -12,6 +12,8 @@ import {
   GITHUB_CALLBACK_PATH,
   handleGitHubAppCallback,
 } from './theme/github-app';
+import { contentTypeFor } from './theme/store';
+import { themeFromId, themeStore } from './themes';
 import type { PluginEnv } from './types';
 
 const PLUGIN_VIEW_PREFIXES = ['/templates/', '/sections/', '/snippets/', '/locales/'];
@@ -64,8 +66,7 @@ export default {
       return serveViewAsset(env.VIEWS, assetPath);
     }
     if (path.startsWith('/__plugin/admin/theme/assets/')) {
-      const assetPath = `/theme/assets/${path.slice('/__plugin/admin/theme/assets/'.length)}`;
-      return serveViewAsset(env.VIEWS, assetPath);
+      return serveThemeAsset(env, url);
     }
 
     try {
@@ -87,4 +88,31 @@ function pluginViewAsset(views: Fetcher, path: string): Promise<Response> | Resp
     return new Response('not found', { status: 404 });
   }
   return serveViewAsset(views, path, { bareLiquidSnippets: true });
+}
+
+/**
+ * Theme assets belong to the selected theme, which may live in R2 rather than
+ * the immutable plugin view bundle. The theme query keeps this route scoped to
+ * the same store as the preview data and Liquid bundle.
+ */
+async function serveThemeAsset(env: PluginEnv, url: URL): Promise<Response> {
+  const filename = url.pathname.slice('/__plugin/admin/theme/assets/'.length);
+  if (!filename || filename.includes('..') || !/^[a-z0-9][a-z0-9._/-]*$/i.test(filename)) {
+    return new Response('not found', { status: 404 });
+  }
+
+  const theme = await themeFromId(env, url.searchParams.get('theme'));
+  if (!theme) return new Response('Theme not found.', { status: 404 });
+
+  const assetPath = `/assets/${filename}`;
+  try {
+    return new Response(await themeStore(env, theme).read(assetPath), {
+      headers: {
+        'content-type': contentTypeFor(assetPath),
+        'cache-control': 'no-store',
+      },
+    });
+  } catch {
+    return new Response('not found', { status: 404 });
+  }
 }

@@ -81,7 +81,7 @@ export async function handleThemeEditorAdmin(
       });
     }
     if (segments[1] === 'data') return previewData(env, url, theme);
-    return preview();
+    return preview(theme);
   }
 
   if (section === 'visibility') {
@@ -426,14 +426,14 @@ async function editor(
  * here could ever run. The renderer lives in the editor page instead and writes
  * the theme into this frame across the same origin.
  */
-function preview(): Response {
+function preview(theme: ThemeDefinition): Response {
   return new Response(`<!doctype html>
 <html>
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>Theme preview</title>
-<link rel="stylesheet" href="${ADMIN_BASE}/theme/assets/site.css">
+<link rel="stylesheet" href="${ADMIN_BASE}/theme/assets/site.css?theme=${encodeURIComponent(theme.id)}">
 <style>.theme-preview-status{margin:0;padding:24px;font:500 14px/1.5 system-ui;color:#6b7280}</style>
 </head>
 <body>
@@ -495,7 +495,7 @@ async function previewData(
     template: selectedTemplate,
     hidden: overrides.hidden,
     settingOverrides: overrides.settings,
-    runtime: themeRuntimeSettings(env),
+    runtime: themeRuntimeSettings(env, theme.id),
   }, { headers: { 'cache-control': 'no-store' } });
 }
 

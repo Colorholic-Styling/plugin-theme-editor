@@ -71,22 +71,27 @@ const PREVIEW_STYLE = `<style>
  */
 export interface ThemeRuntime {
   store: ThemeStore;
+  themeId: string;
   siteTitle: string;
   bookingUrl: string;
   assetVersion: string;
 }
 
 /** The runtime minus its store, which is what the Worker sends the browser. */
-export function themeRuntimeSettings(env: PluginEnv): Omit<ThemeRuntime, 'store'> {
+export function themeRuntimeSettings(
+  env: PluginEnv,
+  themeId: string,
+): Omit<ThemeRuntime, 'store'> {
   return {
+    themeId,
     siteTitle: env.THEME_SITE_TITLE || '',
     bookingUrl: env.THEME_BOOKING_URL || '',
     assetVersion: env.CF_VERSION_METADATA?.id?.slice(0, 8) || 'dev',
   };
 }
 
-export function themeRuntime(env: PluginEnv, store: ThemeStore): ThemeRuntime {
-  return { ...themeRuntimeSettings(env), store };
+export function themeRuntime(env: PluginEnv, store: ThemeStore, themeId: string): ThemeRuntime {
+  return { ...themeRuntimeSettings(env, themeId), store };
 }
 
 export function previewThemeStore(base: ThemeStore): ThemeStore {
@@ -126,7 +131,16 @@ export async function renderThemePreview(
 
   return html
     .replace('</head>', `${PREVIEW_STYLE}</head>`)
-    .replaceAll('href="/assets/site.css', `href="${ADMIN_BASE}/theme/assets/site.css`);
+    .replace(
+      /href="\/assets\/site\.css(?:\?([^"]*))?"/g,
+      (_match, query: string | undefined) => {
+        const parameters = [
+          runtime.themeId ? `theme=${encodeURIComponent(runtime.themeId)}` : '',
+          query || '',
+        ].filter(Boolean).join('&');
+        return `href="${ADMIN_BASE}/theme/assets/site.css${parameters ? `?${parameters}` : ''}"`;
+      },
+    );
 }
 
 function previewRenderData(

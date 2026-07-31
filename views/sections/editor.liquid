@@ -29,14 +29,52 @@
         class="mb-4 flex flex-wrap items-end gap-3 rounded-xl border border-gray-200 bg-white p-4 shadow-sm">
     <input type="hidden" name="theme" value="{{ themeId }}">
     {% if schemaMode %}<input type="hidden" name="settings" value="schema">{% endif %}
-    <label class="min-w-0 flex-1" style="min-width:16rem">
-      <span class="mb-1 block text-sm font-medium text-gray-700">CMS page</span>
-      <select name="page_id" class="block h-10 w-full rounded-lg border border-gray-300 bg-white px-3 text-sm">
+    <div class="min-w-0 flex-1" style="min-width:16rem">
+      <label id="theme_editor_page_label"
+             for="theme_editor_page_search"
+             class="mb-1 block text-sm font-medium text-gray-700">CMS page</label>
+      <select name="page_id"
+              aria-labelledby="theme_editor_page_label"
+              data-theme-editor-page-select
+              class="block h-10 w-full rounded-lg border border-gray-300 bg-white px-3 text-sm">
         {% for page in pages %}
           <option value="{{ page.id }}"{% if page.selected %} selected{% endif %}>{{ page.label }}</option>
         {% endfor %}
       </select>
-    </label>
+      <div class="relative min-w-0" data-theme-editor-page-combobox hidden>
+        <div class="relative min-w-0">
+          <input id="theme_editor_page_search"
+                 type="text"
+                 autocomplete="off"
+                 role="combobox"
+                 aria-labelledby="theme_editor_page_label"
+                 aria-autocomplete="list"
+                 aria-expanded="false"
+                 aria-controls="theme_editor_page_results"
+                 placeholder="Search pages by name, type, or id"
+                 data-theme-editor-page-search
+                 class="block h-10 w-full rounded-lg border border-gray-300 bg-white px-3 pr-10 text-sm focus:border-transparent focus:outline-none focus:ring-2 focus:ring-indigo-500">
+          <button type="button"
+                  title="Show CMS pages"
+                  aria-label="Show CMS pages"
+                  data-theme-editor-page-toggle
+                  class="absolute right-0 top-0 inline-flex h-10 w-10 items-center justify-center rounded-r-lg text-gray-500 hover:bg-gray-50 hover:text-gray-700">
+            <svg class="h-4 w-4" viewBox="0 0 20 20" fill="none" stroke="currentColor" stroke-width="2" aria-hidden="true">
+              <path d="M5 7.5l5 5 5-5"></path>
+            </svg>
+          </button>
+        </div>
+        <div id="theme_editor_page_results"
+             role="listbox"
+             aria-label="CMS pages"
+             data-theme-editor-page-results
+             class="absolute left-0 right-0 top-full z-20 mt-1 hidden max-h-64 overflow-auto rounded-lg border border-gray-200 bg-white py-1 shadow-lg">
+          <p class="hidden px-3 py-3 text-sm text-gray-500" data-theme-editor-page-empty>
+            No matching pages.
+          </p>
+        </div>
+      </div>
+    </div>
     <label style="min-width:12rem">
       <span class="mb-1 block text-sm font-medium text-gray-700">Theme template</span>
       <select name="template" class="block h-10 w-full rounded-lg border border-gray-300 bg-white px-3 text-sm">

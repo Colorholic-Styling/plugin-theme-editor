@@ -388,30 +388,75 @@ describe('editor page visibility toggle', () => {
     expect(submit).toHaveBeenCalledTimes(2);
   });
 
+  it('searches the page list and loads the keyboard-selected result', async () => {
+    const submit = vi.fn();
+    vi.spyOn(HTMLFormElement.prototype, 'submit').mockImplementation(submit);
+    await mountEditor({
+      pages: [
+        { id: 12, label: 'Home · home', selected: true },
+        { id: 25, label: 'Contact us · page', selected: false },
+        { id: 31, label: 'Privacy · legal', selected: false },
+      ],
+    });
+
+    const loadForm = document.querySelector('[data-theme-editor-load]') as HTMLFormElement;
+    const pageSelect = loadForm.querySelector('[data-theme-editor-page-select]') as HTMLSelectElement;
+    const combobox = loadForm.querySelector('[data-theme-editor-page-combobox]') as HTMLElement;
+    const search = combobox.querySelector('[data-theme-editor-page-search]') as HTMLInputElement;
+
+    expect(pageSelect.hidden).toBe(true);
+    expect(combobox.hidden).toBe(false);
+    expect(search.value).toBe('Home · home');
+
+    search.focus();
+    search.value = 'contact';
+    search.dispatchEvent(new Event('input', { bubbles: true }));
+
+    const visible = [...combobox.querySelectorAll<HTMLElement>('[data-theme-editor-page-option]')]
+      .filter((option) => !option.hidden);
+    expect(visible.map((option) => option.textContent?.trim())).toEqual(['Contact us · page']);
+    expect(search.getAttribute('aria-expanded')).toBe('true');
+
+    search.dispatchEvent(new KeyboardEvent('keydown', { key: 'ArrowDown', bubbles: true }));
+    search.dispatchEvent(new KeyboardEvent('keydown', { key: 'Enter', bubbles: true }));
+
+    expect(pageSelect.value).toBe('25');
+    expect(search.value).toBe('Contact us · page');
+    expect(search.getAttribute('aria-expanded')).toBe('false');
+    expect(submit).toHaveBeenCalledTimes(1);
+  });
+
   it('confirms before discarding edits and puts the selector back on cancel', async () => {
     const submit = vi.fn();
     vi.spyOn(HTMLFormElement.prototype, 'submit').mockImplementation(submit);
-    await mountEditor();
+    await mountEditor({
+      pages: [
+        { id: 12, label: 'Home · home', selected: true },
+        { id: 25, label: 'Contact us · page', selected: false },
+      ],
+    });
 
     // Typing into a settings field is what marks the editor dirty.
     const field = document.querySelector('[data-theme-editor-form] [name^="field:/"]');
     if (field) field.dispatchEvent(new Event('input', { bubbles: true }));
 
     const loadForm = document.querySelector('[data-theme-editor-load]') as HTMLFormElement;
-    const pageSelect = loadForm.querySelector('select[name="page_id"]') as HTMLSelectElement;
+    const pageSelect = loadForm.querySelector('[data-theme-editor-page-select]') as HTMLSelectElement;
+    const search = loadForm.querySelector('[data-theme-editor-page-search]') as HTMLInputElement;
     const loaded = pageSelect.value;
-    const option = document.createElement('option');
-    option.value = '99';
-    pageSelect.appendChild(option);
-    pageSelect.value = '99';
 
     vi.stubGlobal('confirm', vi.fn(() => false));
-    pageSelect.dispatchEvent(new Event('change', { bubbles: true }));
+    search.focus();
+    search.value = 'contact';
+    search.dispatchEvent(new Event('input', { bubbles: true }));
+    search.dispatchEvent(new KeyboardEvent('keydown', { key: 'ArrowDown', bubbles: true }));
+    search.dispatchEvent(new KeyboardEvent('keydown', { key: 'Enter', bubbles: true }));
 
     expect(submit).not.toHaveBeenCalled();
     // A selector showing a page that was never loaded would misdescribe the
     // editor, so cancelling restores it.
     expect(pageSelect.value).toBe(loaded);
+    expect(search.value).toBe('Home · home');
   });
 
   it('leaves the plain form post alone when the frame cannot be redrawn here', async () => {

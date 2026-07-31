@@ -59,7 +59,12 @@ function previewData(overrides: Record<string, unknown> = {}) {
     },
     template: { id: 'page', label: 'Page', path: '/templates/page.json', format: 'json' },
     hidden: [],
-    runtime: { siteTitle: 'Preview site', bookingUrl: 'https://book.example.com', assetVersion: 'dev' },
+    runtime: {
+      themeId: 'example-theme',
+      siteTitle: 'Preview site',
+      bookingUrl: 'https://book.example.com',
+      assetVersion: 'dev',
+    },
     ...overrides,
   };
 }

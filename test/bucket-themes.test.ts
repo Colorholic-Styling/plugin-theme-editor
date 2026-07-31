@@ -74,6 +74,7 @@ function themeFiles(id: string): Record<string, string> {
       files: ['/templates/page.json'],
     }),
     [`${id}/templates/page.json`]: PAGE_TEMPLATE,
+    [`${id}/assets/site.css`]: 'body { color: rebeccapurple; }',
   };
 }
 
@@ -147,6 +148,21 @@ describe('bucket-backed themes', () => {
     expect(isWritable(store)).toBe(true);
     expect(await store.read('/templates/page.json')).toBe(PAGE_TEMPLATE);
     expect(await store.exists('/templates/missing.json')).toBe(false);
+  });
+
+  it('serves CSS from the selected bucket theme with a stylesheet MIME type', async () => {
+    const THEMES = bucket({
+      ...themeFiles('example-theme'),
+      ...themeFiles('studio-minimal'),
+    });
+    const response = await plugin.fetch(
+      adminRequest('/__plugin/admin/theme/assets/site.css?theme=studio-minimal'),
+      env({ THEMES }),
+    );
+
+    expect(response.status).toBe(200);
+    expect(response.headers.get('content-type')).toBe('text/css');
+    expect(await response.text()).toBe('body { color: rebeccapurple; }');
   });
 
   it('uploads a theme folder into the bucket', async () => {

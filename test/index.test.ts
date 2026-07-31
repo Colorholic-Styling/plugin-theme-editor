@@ -71,7 +71,7 @@ async function renderPreview(
   const templates = await themeTemplates(pluginEnv, theme, store);
   const template = selectThemeTemplate(templates, options.templateId ?? 'page');
   if (!template) throw new Error('Theme template not found');
-  const runtime = themeRuntime(pluginEnv, store);
+  const runtime = themeRuntime(pluginEnv, store, theme.id);
   return renderThemePreview(runtime, {
     page: fixture,
     settings: null,
@@ -303,6 +303,8 @@ describe('plugin contract', () => {
     expect(script).toContain("function reloadPreview()");
     expect(script).toContain("preview.contentWindow.location.reload()");
     expect(script).toContain("Discard unsaved changes in this selection?");
+    expect(script).toContain("function setupPageCombobox(select, combobox)");
+    expect(script).toContain("data-theme-editor-page-option");
 
     const proxied = await plugin.fetch(
       adminRequest('/__plugin/admin/assets/theme-editor.js'),
@@ -499,6 +501,9 @@ describe('theme editor routes', () => {
     expect(html).toContain('data-editor-action="/admin/plugins/theme-editor/editor"');
     expect(html).toContain('name="theme" value="example-theme"');
     expect(html).toContain('name="template"');
+    expect(html).toContain('data-theme-editor-page-combobox');
+    expect(html).toContain('role="combobox"');
+    expect(html).toContain('placeholder="Search pages by name, type, or id"');
     expect(html).toContain('<option value="news-index">News Index</option>');
     expect(html).toContain('<option value="page" selected>Page</option>');
     expect(html).toContain('href="/admin/plugins/theme-editor"');
@@ -521,7 +526,7 @@ describe('theme editor routes', () => {
     expect(html).toContain('theme-editor-block is-selected');
     expect(html).toContain('data-theme-editor-block="0"');
     expect(html).toContain('/admin/plugins/theme-editor/editor?theme=example-theme&amp;template=page&amp;page_id=12');
-    expect(html).toContain('/admin/plugins/theme-editor/theme/assets/site.css');
+    expect(html).toContain('/admin/plugins/theme-editor/theme/assets/site.css?theme=example-theme&v=');
     expect(html).not.toContain('href="/assets/site.css');
   });
 
@@ -539,7 +544,7 @@ describe('theme editor routes', () => {
     // run. The editor page renders into this frame instead.
     expect(html).not.toContain('class="hero');
     expect(html).not.toContain('<script');
-    expect(html).toContain('/admin/plugins/theme-editor/theme/assets/site.css');
+    expect(html).toContain('/admin/plugins/theme-editor/theme/assets/site.css?theme=example-theme');
     expect(html).toContain('data-theme-preview-status');
   });
 

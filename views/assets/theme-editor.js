@@ -161,6 +161,12 @@
   // this takes over, so the form is never left with no way to submit.
   var loadForm = root.querySelector('[data-theme-editor-load]');
   if (loadForm) {
+    var pageSelect = loadForm.querySelector('[data-theme-editor-page-select]');
+    var pageCombobox = loadForm.querySelector('[data-theme-editor-page-combobox]');
+    var syncPageCombobox = pageSelect && pageCombobox
+      ? setupPageCombobox(pageSelect, pageCombobox)
+      : function () {};
+
     loadForm.querySelectorAll('select').forEach(function (select) {
       select.setAttribute('data-loaded-value', select.value);
     });
@@ -171,6 +177,7 @@
         // Leaving the new choice showing would describe a page that was never
         // loaded, so put the selector back to what is on screen.
         select.value = select.getAttribute('data-loaded-value') || select.value;
+        syncPageCombobox();
         return;
       }
       dirty = false;
@@ -178,6 +185,174 @@
     });
     var loadButton = loadForm.querySelector('[data-theme-editor-load-button]');
     if (loadButton) loadButton.hidden = true;
+  }
+
+  function setupPageCombobox(select, combobox) {
+    var search = combobox.querySelector('[data-theme-editor-page-search]');
+    var results = combobox.querySelector('[data-theme-editor-page-results]');
+    var empty = combobox.querySelector('[data-theme-editor-page-empty]');
+    var toggle = combobox.querySelector('[data-theme-editor-page-toggle]');
+    if (!search || !results || !empty || !toggle) return function () {};
+
+    var options = Array.prototype.map.call(select.options, function (source, index) {
+      var label = source.label || source.text || source.textContent || '';
+      var option = document.createElement('button');
+      option.type = 'button';
+      option.id = 'theme_editor_page_option_' + index;
+      option.setAttribute('role', 'option');
+      option.setAttribute('data-theme-editor-page-option', '');
+      option.setAttribute('data-page-id', source.value);
+      option.setAttribute(
+        'data-page-search',
+        (label + ' #' + source.value).toLocaleLowerCase()
+      );
+      option.className = 'block w-full truncate px-3 py-2 text-left text-sm text-gray-700 hover:bg-gray-50';
+      option.textContent = label;
+      results.insertBefore(option, empty);
+      return option;
+    });
+    var activeOption = null;
+
+    select.hidden = true;
+    combobox.hidden = false;
+    sync();
+
+    function selectedSource() {
+      var selectedValue = select.value;
+      return Array.prototype.find.call(select.options, function (option) {
+        return option.value === selectedValue;
+      }) || select.options[0] || null;
+    }
+
+    function sync() {
+      var selected = selectedSource();
+      search.value = selected
+        ? selected.label || selected.text || selected.textContent || ''
+        : '';
+      options.forEach(function (option) {
+        var isSelected = !!selected && option.getAttribute('data-page-id') === selected.value;
+        option.setAttribute('aria-selected', isSelected ? 'true' : 'false');
+        option.classList.toggle('bg-indigo-50', isSelected);
+        option.classList.toggle('font-semibold', isSelected);
+        option.classList.toggle('text-indigo-700', isSelected);
+        option.classList.toggle('text-gray-700', !isSelected);
+      });
+      closeResults();
+    }
+
+    function visibleOptions() {
+      return options.filter(function (option) { return !option.hidden; });
+    }
+
+    function filterOptions(query) {
+      var needle = query.trim().toLocaleLowerCase();
+      var visibleCount = 0;
+      options.forEach(function (option) {
+        var visible = !needle
+          || (option.getAttribute('data-page-search') || '').indexOf(needle) !== -1;
+        option.hidden = !visible;
+        if (visible) visibleCount += 1;
+      });
+      empty.classList.toggle('hidden', visibleCount > 0);
+      setActiveOption(null);
+    }
+
+    function openResults(query) {
+      filterOptions(query || '');
+      results.classList.remove('hidden');
+      search.setAttribute('aria-expanded', 'true');
+    }
+
+    function closeResults() {
+      results.classList.add('hidden');
+      search.setAttribute('aria-expanded', 'false');
+      setActiveOption(null);
+    }
+
+    function setActiveOption(option) {
+      if (activeOption) activeOption.classList.remove('bg-gray-100');
+      activeOption = option;
+      if (!activeOption) {
+        search.removeAttribute('aria-activedescendant');
+        return;
+      }
+      activeOption.classList.add('bg-gray-100');
+      search.setAttribute('aria-activedescendant', activeOption.id);
+      if (typeof activeOption.scrollIntoView === 'function') {
+        activeOption.scrollIntoView({ block: 'nearest' });
+      }
+    }
+
+    function moveActive(step) {
+      var visible = visibleOptions();
+      if (!visible.length) return;
+      var index = activeOption ? visible.indexOf(activeOption) : -1;
+      index = index < 0
+        ? (step > 0 ? 0 : visible.length - 1)
+        : (index + step + visible.length) % visible.length;
+      setActiveOption(visible[index]);
+    }
+
+    function selectOption(option) {
+      var id = option.getAttribute('data-page-id') || '';
+      if (!id) return;
+      select.value = id;
+      sync();
+      select.dispatchEvent(new Event('change', { bubbles: true }));
+    }
+
+    search.addEventListener('focus', function () {
+      openResults('');
+      search.select();
+    });
+    search.addEventListener('click', function () {
+      if (results.classList.contains('hidden')) openResults('');
+    });
+    search.addEventListener('input', function () {
+      openResults(search.value);
+    });
+    search.addEventListener('keydown', function (event) {
+      if (event.key === 'Tab') {
+        closeResults();
+        return;
+      }
+      if (event.key === 'Escape') {
+        event.preventDefault();
+        sync();
+        return;
+      }
+      if (event.key === 'ArrowDown' || event.key === 'ArrowUp') {
+        event.preventDefault();
+        if (results.classList.contains('hidden')) openResults(search.value);
+        moveActive(event.key === 'ArrowDown' ? 1 : -1);
+        return;
+      }
+      if (event.key !== 'Enter') return;
+      var option = activeOption || visibleOptions()[0];
+      if (!option) return;
+      event.preventDefault();
+      selectOption(option);
+    });
+    toggle.addEventListener('click', function () {
+      if (results.classList.contains('hidden')) {
+        search.focus();
+        openResults('');
+        search.select();
+      } else {
+        closeResults();
+      }
+    });
+    results.addEventListener('click', function (event) {
+      var target = event.target;
+      if (!target || typeof target.closest !== 'function') return;
+      var option = target.closest('[data-theme-editor-page-option]');
+      if (option && results.contains(option)) selectOption(option);
+    });
+    document.addEventListener('click', function (event) {
+      if (!combobox.contains(event.target)) closeResults();
+    });
+
+    return sync;
   }
 
   if (preview) {
