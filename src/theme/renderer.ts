@@ -1,11 +1,14 @@
 import type { CmsPage } from '@lionrockjs/worker-cms-plugin';
 import { ADMIN_BASE } from '../constants';
+import { editorFields, type EditorField } from '../editor-model';
 import type { PluginEnv, ThemeRenderContext } from '../types';
 import { mediaUrl, plainText, richText, safeUrl } from './html';
 import { attr, indexedBlocks, items, localized, text, truthy, type Lect } from './lect';
 import { renderThemeSource } from './liquid';
+import type { TemplateOverrides } from './overrides';
+import { settingPathCandidates } from './schema';
 import { AssetThemeStore, VirtualThemeStore, type ThemeStore } from './store';
-import { referencedBlockIndex, type ThemeTemplate } from './templates';
+import { mergeSectionOrder, referencedBlockIndex, type ThemeTemplate } from './templates';
 
 /** Standard 0xCMS block types supported by the built-in preview adapter. */
 const BLOCK_TYPES = [
@@ -56,11 +59,14 @@ const CMS_SECTIONS_SOURCE = `
 
 const PREVIEW_STYLE = `<style>
 .theme-editor-block{position:relative}
-.theme-editor-select{position:absolute;inset:0;z-index:1000;display:block;border:2px solid transparent;color:transparent;text-decoration:none}
-.theme-editor-select span{position:absolute;top:8px;right:8px;padding:6px 10px;border-radius:999px;background:#4f46e5;color:#fff;font:600 12px/1.2 system-ui;opacity:0;box-shadow:0 2px 8px rgba(0,0,0,.2)}
+.theme-editor-select{position:absolute;inset:0;z-index:1000;display:block;border:2px solid transparent;color:transparent;text-decoration:none;pointer-events:none}
+.theme-editor-select span{position:absolute;top:8px;right:8px;padding:6px 10px;border-radius:999px;background:#4f46e5;color:#fff;font:600 12px/1.2 system-ui;opacity:0;box-shadow:0 2px 8px rgba(0,0,0,.2);pointer-events:auto}
 .theme-editor-block:hover>.theme-editor-select,.theme-editor-select:focus{border-color:#6366f1;outline:0}
 .theme-editor-block:hover>.theme-editor-select span,.theme-editor-select:focus span,.theme-editor-block.is-selected>.theme-editor-select span{opacity:1}
 .theme-editor-block.is-selected>.theme-editor-select{border-color:#4f46e5;box-shadow:inset 0 0 0 2px rgba(255,255,255,.9)}
+[data-theme-editor-field][contenteditable]{position:relative;z-index:1001;cursor:text;outline:2px solid transparent;outline-offset:3px}
+[data-theme-editor-field][contenteditable]:hover{outline-color:rgba(99,102,241,.55)}
+[data-theme-editor-field][contenteditable]:focus{outline-color:#4f46e5;box-shadow:0 0 0 4px rgba(99,102,241,.16)}
 </style>`;
 
 /**
@@ -120,14 +126,18 @@ export async function renderThemePreview(
   template: ThemeTemplate,
   hidden: ReadonlySet<string> = new Set(),
   settingOverrides: Readonly<Record<string, Record<string, string>>> = {},
+  structure: Readonly<Pick<TemplateOverrides, 'order' | 'added'>> = { order: [], added: {} },
 ): Promise<string> {
   const store = runtime.store;
   const renderData = previewRenderData(runtime, context);
   const compiledTemplate = await previewTemplateSource(
-    store, template, renderData, hidden, settingOverrides,
+    store, template, renderData, context, hidden, settingOverrides, structure,
   );
   renderData.templateSections = compiledTemplate.sections;
-  const html = await renderThemeSource(store, compiledTemplate.source, renderData);
+  const renderStore = Object.keys(compiledTemplate.files).length
+    ? new VirtualThemeStore(store, compiledTemplate.files)
+    : store;
+  const html = await renderThemeSource(renderStore, compiledTemplate.source, renderData);
 
   return html
     .replace('</head>', `${PREVIEW_STYLE}</head>`)
@@ -205,22 +215,30 @@ async function previewTemplateSource(
   store: ThemeStore,
   template: ThemeTemplate,
   data: Record<string, unknown>,
+  context: ThemeRenderContext,
   hidden: ReadonlySet<string>,
   settingOverrides: Readonly<Record<string, Record<string, string>>>,
-): Promise<{ source: string; sections: Record<string, unknown> }> {
+  structure: Readonly<Pick<TemplateOverrides, 'order' | 'added'>>,
+): Promise<{ source: string; sections: Record<string, unknown>; files: Record<string, string> }> {
   const source = await store.read(template.path);
-  if (template.format === 'liquid') return { source, sections: {} };
+  if (template.format === 'liquid') return { source, sections: {}, files: {} };
 
   const definition = JSON.parse(source) as unknown;
   if (!isRecord(definition)) throw new Error(`Invalid theme template: ${template.id}`);
   const layout = safeTemplateToken(definition.layout) || 'default';
-  const sections = isRecord(definition.sections) ? definition.sections : {};
+  const sections = {
+    ...(isRecord(definition.sections) ? definition.sections : {}),
+    ...(structure.added ?? {}),
+  };
   // Hiding a section drops it from the order the preview compiles, leaving the
   // theme's own template file untouched.
-  const order = Array.isArray(definition.order)
-    ? definition.order.filter((key): key is string => typeof key === 'string' && !hidden.has(key))
+  const sourceOrder = Array.isArray(definition.order)
+    ? definition.order.filter((key): key is string => typeof key === 'string')
     : [];
+  const order = mergeSectionOrder(sourceOrder, structure.order ?? [], Object.keys(sections))
+    .filter((key) => !hidden.has(key));
   const templateSections: Record<string, unknown> = {};
+  const editorSectionFiles: Record<string, string> = {};
   const renderedSections: string[] = [];
   for (const [index, key] of order.entries()) {
     const section = sections[key];
@@ -243,13 +261,34 @@ async function previewTemplateSource(
     // is how the editor edits a template it cannot write to.
     const declared = isRecord(section.settings) ? section.settings : {};
     const settings = { ...declared, ...(settingOverrides[key] ?? {}) };
+    const editableFields = editableSettingFields(context, settings);
+    const resolvedBlocks = await resolveTemplateBlocks(store, section, data, context);
     templateSections[variable] = {
       id: key,
       type,
       settings: await resolveTemplateValue(store, settings, data),
-      blocks: await resolveTemplateBlocks(store, section, data),
+      blocks: resolvedBlocks.blocks,
+      // A theme opts a semantic element into direct editing with, for example,
+      // `data-theme-editor-field="{{ section.editor.fields.title }}"`. Only a
+      // direct page-block binding backed by a plain scalar gets a field name;
+      // literals, computed Liquid, and rich HTML stay unannotated rather than
+      // pretending the rendered value can safely be written back.
+      editor: { fields: editableFields },
     };
-    const renderCall = `{% render '/sections/${type}', section: templateSections.${variable} %}`;
+    // Existing themes should become directly editable without every heading
+    // and label needing a manual attribute. Each section instance gets its own
+    // virtual source because the same section type can bind to different page
+    // blocks in one template. Explicit attributes remain supported for markup
+    // too complex to infer safely.
+    const editorSectionPath = `/theme-editor/sections/${variable}`;
+    let editorSectionSource = await store.read(`/sections/${type}.liquid`);
+    editorSectionSource = await virtualizeSectionHead(
+      store, editorSectionSource, variable, editableFields, editorSectionFiles,
+    );
+    editorSectionFiles[`${editorSectionPath}.liquid`] = annotateSectionFields(
+      editorSectionSource, editableFields, resolvedBlocks.editableIds,
+    );
+    const renderCall = `{% render '${editorSectionPath}', section: templateSections.${variable} %}`;
     const boundBlock = referencedBlockIndex(section);
     renderedSections.push(boundBlock === null
       ? renderCall
@@ -266,29 +305,216 @@ ${renderedSections.join('\n')}
 ${wrapper.close}
 {% endblock %}`,
     sections: templateSections,
+    files: editorSectionFiles,
   };
+}
+
+/** A direct `page.blocks[N].value` expression is reversible; other Liquid is not. */
+const DIRECT_BLOCK_BINDING = /^\s*\{\{\s*page\.blocks\[(\d+)\]\.([a-zA-Z0-9_.\[\]]+)\s*\}\}\s*$/;
+
+function editableSettingFields(
+  context: ThemeRenderContext,
+  settings: Readonly<Record<string, unknown>>,
+): Record<string, string> {
+  const fieldsByBlock = new Map<number, EditorField[]>();
+  const editable: Record<string, string> = {};
+
+  for (const [id, binding] of Object.entries(settings)) {
+    if (typeof binding !== 'string') continue;
+    const match = DIRECT_BLOCK_BINDING.exec(binding);
+    if (!match) continue;
+
+    const blockIndex = Number(match[1]);
+    let fields = fieldsByBlock.get(blockIndex);
+    if (!fields) {
+      fields = editorFields(context.page, context.languages, context.language, blockIndex);
+      fieldsByBlock.set(blockIndex, fields);
+    }
+
+    const prefix = `/_blocks/${blockIndex}/`;
+    const candidates = [
+      ...bindingPathCandidates(match[2]),
+      ...settingPathCandidates(id),
+    ];
+    const field = candidates
+      .flatMap((candidate) => [`${prefix}${candidate}/${context.language}`, `${prefix}${candidate}`])
+      .map((path) => fields?.find((entry) => entry.path === path))
+      .find((entry) => entry !== undefined);
+
+    // Inline editing is deliberately plain text. A value that looks like
+    // markup must keep going through its normal rich-text control.
+    if (!field || field.readOnly || /<[^>]+>/.test(field.value)) continue;
+    editable[id] = field.inputName;
+  }
+
+  return editable;
+}
+
+function bindingPathCandidates(path: string): string[] {
+  const segments = path.replace(/\[(\d+)\]/g, '.$1').split('.').filter(Boolean);
+  const variants = new Set<string>([segments.join('/')]);
+  const snake = segments.map((segment) => segment
+    .replace(/([a-z0-9])([A-Z])/g, '$1_$2')
+    .toLowerCase());
+  variants.add(snake.join('/'));
+
+  const last = snake.at(-1) ?? '';
+  if (last.endsWith('_html')) {
+    variants.add([...snake.slice(0, -1), last.slice(0, -'_html'.length)].join('/'));
+  }
+  if (last === 'href') variants.add([...snake.slice(0, -1), 'url'].join('/'));
+  return [...variants];
+}
+
+/**
+ * Adds the field marker to an existing semantic element when its entire text
+ * content is one direct section setting. This deliberately refuses mixed text,
+ * expressions inside attributes, and elements with several settings: those do
+ * not have a reversible value and can opt in explicitly in the theme instead.
+ */
+function annotateSectionFields(
+  source: string,
+  fields: Readonly<Record<string, string>>,
+  dynamicFields: ReadonlySet<string> = new Set(),
+  staticRoots: readonly string[] = ['section.settings'],
+): string {
+  const output = /\{\{\s*([a-zA-Z_][a-zA-Z0-9_]*(?:\.[a-zA-Z0-9_]+)*)\b[^}]*\}\}/g;
+  const aliases = new Map<string, string>();
+  const assign = /\{%\s*assign\s+([a-zA-Z_][a-zA-Z0-9_]*)\s*=\s*(section\.settings|settings)\.([a-zA-Z0-9_]+)\b[^%]*%\}/g;
+  let assignment: RegExpExecArray | null;
+  while ((assignment = assign.exec(source)) !== null) {
+    if (!staticRoots.includes(assignment[2])) continue;
+    const field = fields[assignment[3]];
+    if (field) aliases.set(assignment[1], field);
+  }
+  const rowAliases = new Set<string>();
+  const rowAssign = /\{%\s*assign\s+([a-zA-Z_][a-zA-Z0-9_]*)\s*=\s*[a-zA-Z_][a-zA-Z0-9_]*\.settings\s*\|\s*default:\s*[a-zA-Z_][a-zA-Z0-9_]*\s*%\}/g;
+  while ((assignment = rowAssign.exec(source)) !== null) rowAliases.add(assignment[1]);
+  const insertions = new Map<number, { end: number; fields: Set<string> }>();
+  let match: RegExpExecArray | null;
+
+  while ((match = output.exec(source)) !== null) {
+    const expression = match[1];
+    let field = aliases.get(expression) ?? '';
+    for (const root of staticRoots) {
+      if (field || !expression.startsWith(`${root}.`)) continue;
+      const id = expression.slice(root.length + 1);
+      if (!id.includes('.')) field = fields[id] ?? '';
+    }
+    if (!field) {
+      const segments = expression.split('.');
+      if (segments.length === 2 && rowAliases.has(segments[0]) && dynamicFields.has(segments[1])) {
+        field = `{{ ${segments[0]}.editor.fields.${segments[1]} | escape }}`;
+      }
+    }
+    if (!field) continue;
+    const expressionStart = match.index;
+    const expressionEnd = output.lastIndex;
+    const lastOpen = source.lastIndexOf('<', expressionStart);
+    const lastClose = source.lastIndexOf('>', expressionStart);
+    if (lastOpen > lastClose) continue;
+
+    const element = enclosingElement(source, expressionStart);
+    if (!element) continue;
+    if (source.slice(element.end, expressionStart).trim()) continue;
+    const after = source.slice(expressionEnd);
+    const closing = new RegExp(`^\\s*</${element.name}\\s*>`, 'i');
+    if (!closing.test(after)) continue;
+
+    const opening = source.slice(element.start, element.end);
+    if (/\sdata-theme-editor-field\s*=/.test(opening)) continue;
+    const existing = insertions.get(element.start) ?? { end: element.end, fields: new Set<string>() };
+    existing.fields.add(field);
+    insertions.set(element.start, existing);
+  }
+
+  let annotated = source;
+  for (const [start, insertion] of [...insertions.entries()].sort((left, right) => right[0] - left[0])) {
+    if (insertion.fields.size !== 1) continue;
+    const field = [...insertion.fields][0];
+    const insertAt = source[insertion.end - 2] === '/' ? insertion.end - 2 : insertion.end - 1;
+    const value = field.includes('{{') ? field : escapeAttribute(field);
+    annotated = `${annotated.slice(0, insertAt)} data-theme-editor-field="${value}"${annotated.slice(insertAt)}`;
+  }
+  return annotated;
+}
+
+async function virtualizeSectionHead(
+  store: ThemeStore,
+  source: string,
+  variable: string,
+  fields: Readonly<Record<string, string>>,
+  files: Record<string, string>,
+): Promise<string> {
+  if (!/(['"])\/snippets\/section-head\1/.test(source)) return source;
+  const sectionHead = /(['"])\/snippets\/section-head\1/g;
+  const virtualPath = `/theme-editor/snippets/${variable}-section-head`;
+  files[`${virtualPath}.liquid`] = annotateSectionFields(
+    await store.read('/snippets/section-head.liquid'), fields, new Set(), ['settings'],
+  );
+  return source.replace(sectionHead, (_match, quote: string) => `${quote}${virtualPath}${quote}`);
+}
+
+function enclosingElement(
+  source: string,
+  position: number,
+): { name: string; start: number; end: number } | null {
+  const tags = /<\/?([a-zA-Z][a-zA-Z0-9-]*)\b[^>]*>/g;
+  const voidTags = new Set(['area', 'base', 'br', 'col', 'embed', 'hr', 'img', 'input', 'link', 'meta', 'param', 'source', 'track', 'wbr']);
+  const stack: Array<{ name: string; start: number; end: number }> = [];
+  let tag: RegExpExecArray | null;
+  while ((tag = tags.exec(source)) !== null && tags.lastIndex <= position) {
+    const name = tag[1].toLowerCase();
+    if (tag[0].startsWith('</')) {
+      for (let index = stack.length - 1; index >= 0; index -= 1) {
+        if (stack[index].name !== name) continue;
+        stack.length = index;
+        break;
+      }
+      continue;
+    }
+    if (tag[0].endsWith('/>') || voidTags.has(name)) continue;
+    stack.push({ name, start: tag.index, end: tags.lastIndex });
+  }
+  return stack.at(-1) ?? null;
+}
+
+function escapeAttribute(value: string): string {
+  return value
+    .replace(/&/g, '&amp;')
+    .replace(/"/g, '&quot;')
+    .replace(/</g, '&lt;')
+    .replace(/>/g, '&gt;');
 }
 
 async function resolveTemplateBlocks(
   store: ThemeStore,
   section: Record<string, unknown>,
   data: Record<string, unknown>,
-): Promise<unknown[]> {
-  if (!isRecord(section.blocks)) return [];
+  context: ThemeRenderContext,
+): Promise<{ blocks: unknown[]; editableIds: Set<string> }> {
+  if (!isRecord(section.blocks)) return { blocks: [], editableIds: new Set() };
   const requestedOrder = Array.isArray(section.block_order)
     ? section.block_order.filter((id): id is string => typeof id === 'string')
     : Object.keys(section.blocks);
   const blocks: unknown[] = [];
+  const editableIds = new Set<string>();
   for (const id of requestedOrder) {
     const block = section.blocks[id];
     if (!isRecord(block)) continue;
+    const declared = isRecord(block.settings) ? block.settings : {};
+    const editableFields = editableSettingFields(context, declared);
+    Object.keys(editableFields).forEach((fieldId) => editableIds.add(fieldId));
+    const resolved = await resolveTemplateValue(store, declared, data);
     blocks.push({
       id,
       type: safeTemplateToken(block.type),
-      settings: await resolveTemplateValue(store, block.settings ?? {}, data),
+      settings: isRecord(resolved)
+        ? { ...resolved, editor: { fields: editableFields } }
+        : resolved,
     });
   }
-  return blocks;
+  return { blocks, editableIds };
 }
 
 async function resolveTemplateValue(

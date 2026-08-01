@@ -3,7 +3,7 @@ import { PLUGIN_ID } from '../constants';
 import type { PluginEnv } from '../types';
 
 /**
- * Per-template section visibility and setting bindings.
+ * Per-template section visibility, order, additions, and setting bindings.
  *
  * Hiding a section is a theme-template decision rather than page content, so it
  * cannot live in a page's `lect`; and the theme bundle is a read-only asset
@@ -12,9 +12,9 @@ import type { PluginEnv } from '../types';
  * between the two — a buffer of pending edits that `publish` folds into the
  * theme and then empties.
  *
- * Hidden keys are stored instead of a copy of the template's `order` array: a
- * theme author who adds a section later gets it shown, rather than silently
- * losing it to a stale snapshot taken when someone first hid something.
+ * A copy of `order` is stored only after someone deliberately rearranges or
+ * adds sections. At render/publish time, newly authored theme keys that are not
+ * in that snapshot are appended, so a later theme update is not lost.
  *
  * The record lives on the CMS that owns it (plugin state), not in this
  * Worker's KV. One plugin Worker serves many hosts, so a copy kept here would
@@ -27,6 +27,10 @@ export interface TemplateOverrides {
   hidden: string[];
   /** Per section key, the Liquid each declared setting binds to. */
   settings: Record<string, Record<string, string>>;
+  /** Explicit order chosen in the editor; newly authored theme keys are merged in. */
+  order: string[];
+  /** Sections created in the editor before they are published into the template. */
+  added: Record<string, { type: string }>;
 }
 
 /** Every template's overrides for one theme — what a single state key holds. */
@@ -93,11 +97,18 @@ async function readTheme(env: PluginEnv, themeId: string): Promise<ThemeOverride
 
 async function writeTheme(env: PluginEnv, themeId: string, value: ThemeOverrides): Promise<void> {
   const state = writableStore(env);
-  // A template entry that hides nothing and rebinds nothing says nothing, so
+  // A template entry that hides nothing, rebinds nothing, and changes no
+  // structure says nothing, so
   // it is not stored — otherwise clearing the last real override would leave
   // the theme with a record that only looks like it has pending edits.
-  const pruned = Object.fromEntries(Object.entries(value).filter(([, entry]) =>
-    entry.hidden.length > 0 || Object.keys(entry.settings).length > 0));
+  const pruned = Object.fromEntries(Object.entries(value)
+    .filter(([, entry]) => hasTemplateOverrides(entry))
+    .map(([templateId, entry]) => [templateId, {
+      hidden: entry.hidden,
+      settings: entry.settings,
+      ...(entry.order.length > 0 ? { order: entry.order } : {}),
+      ...(Object.keys(entry.added).length > 0 ? { added: entry.added } : {}),
+    }]));
   try {
     // An empty record is the absence of overrides, not an override to nothing —
     // and dropping the key keeps a tenant well inside the per-plugin key cap.
@@ -144,7 +155,7 @@ async function adoptLegacy(
     if (!key) continue;
     const raw = await env.THEME_OVERRIDES.get(key).catch(() => null);
     const parsed = parseOverrides(raw);
-    if (parsed.hidden.length === 0 && Object.keys(parsed.settings).length === 0) continue;
+    if (!hasTemplateOverrides(parsed)) continue;
     adopted[templateId] = parsed;
     migrated.push(key);
   }
@@ -168,7 +179,7 @@ export async function templateOverrides(
   templateId: string,
 ): Promise<TemplateOverrides> {
   const record = await adoptLegacy(env, themeId, await readTheme(env, themeId), [templateId]);
-  return record[templateId] ?? { hidden: [], settings: {} };
+  return record[templateId] ?? emptyOverrides();
 }
 
 export async function hiddenSections(
@@ -193,7 +204,7 @@ export async function allTemplateOverrides(
   const declared = new Set(templateIds);
   return Object.fromEntries(Object.entries(record).filter(([templateId, value]) =>
     declared.has(templateId)
-    && (value.hidden.length > 0 || Object.keys(value.settings).length > 0)));
+    && hasTemplateOverrides(value)));
 }
 
 /**
@@ -238,7 +249,7 @@ export async function setSectionSettings(
   settings: Record<string, string>,
 ): Promise<TemplateOverrides> {
   const record = await adoptLegacy(env, themeId, await readTheme(env, themeId), [templateId]);
-  const current = record[templateId] ?? { hidden: [], settings: {} };
+  const current = record[templateId] ?? emptyOverrides();
   const next: TemplateOverrides = {
     ...current,
     settings: { ...current.settings, [sectionKey]: settings },
@@ -258,13 +269,47 @@ export async function setSectionHidden(
   hidden: boolean,
 ): Promise<string[]> {
   const record = await adoptLegacy(env, themeId, await readTheme(env, themeId), [templateId]);
-  const current = record[templateId] ?? { hidden: [], settings: {} };
+  const current = record[templateId] ?? emptyOverrides();
   const keys = new Set(current.hidden);
   if (hidden) keys.add(section);
   else keys.delete(section);
   const stored = [...keys].sort();
   await writeTheme(env, themeId, withTemplate(record, templateId, { ...current, hidden: stored }));
   return stored;
+}
+
+/** Stores the effective JSON template order selected in the sidebar. */
+export async function setSectionOrder(
+  env: PluginEnv,
+  themeId: string,
+  templateId: string,
+  order: string[],
+): Promise<TemplateOverrides> {
+  const record = await adoptLegacy(env, themeId, await readTheme(env, themeId), [templateId]);
+  const current = record[templateId] ?? emptyOverrides();
+  const next = { ...current, order: [...order] };
+  await writeTheme(env, themeId, withTemplate(record, templateId, next));
+  return next;
+}
+
+/** Adds a section declaration and appends its generated key to the order. */
+export async function addTemplateSection(
+  env: PluginEnv,
+  themeId: string,
+  templateId: string,
+  key: string,
+  type: string,
+  order: string[],
+): Promise<TemplateOverrides> {
+  const record = await adoptLegacy(env, themeId, await readTheme(env, themeId), [templateId]);
+  const current = record[templateId] ?? emptyOverrides();
+  const next: TemplateOverrides = {
+    ...current,
+    order: [...order, key],
+    added: { ...current.added, [key]: { type } },
+  };
+  await writeTheme(env, themeId, withTemplate(record, templateId, next));
+  return next;
 }
 
 /** Sets a template's entry, or removes it once it says nothing. */
@@ -274,7 +319,7 @@ function withTemplate(
   value: TemplateOverrides,
 ): ThemeOverrides {
   const next = { ...record };
-  if (value.hidden.length === 0 && Object.keys(value.settings).length === 0) delete next[templateId];
+  if (!hasTemplateOverrides(value)) delete next[templateId];
   else next[templateId] = value;
   return next;
 }
@@ -291,7 +336,7 @@ function parseThemeOverrides(stored: unknown): ThemeOverrides {
 
 /** Accepts the stored shape, or the JSON text the legacy KV namespace holds. */
 function parseOverrides(stored: string | Record<string, unknown> | null): TemplateOverrides {
-  const empty: TemplateOverrides = { hidden: [], settings: {} };
+  const empty = emptyOverrides();
   if (!stored) return empty;
   let parsed: unknown = stored;
   if (typeof stored === 'string') {
@@ -312,12 +357,35 @@ function parseOverrides(stored: string | Record<string, unknown> | null): Templa
       );
     }
   }
+  const added: Record<string, { type: string }> = {};
+  if (isRecord(parsed.added)) {
+    for (const [key, section] of Object.entries(parsed.added)) {
+      if (!/^[a-z0-9][a-z0-9-]*$/.test(key) || !isRecord(section)) continue;
+      const type = typeof section.type === 'string' ? section.type : '';
+      if (/^[a-z0-9][a-z0-9-]*$/.test(type)) added[key] = { type };
+    }
+  }
   return {
     hidden: Array.isArray(parsed.hidden)
       ? parsed.hidden.filter((key): key is string => typeof key === 'string')
       : [],
     settings,
+    order: Array.isArray(parsed.order)
+      ? parsed.order.filter((key): key is string => typeof key === 'string')
+      : [],
+    added,
   };
+}
+
+function emptyOverrides(): TemplateOverrides {
+  return { hidden: [], settings: {}, order: [], added: {} };
+}
+
+function hasTemplateOverrides(value: TemplateOverrides): boolean {
+  return value.hidden.length > 0
+    || Object.keys(value.settings).length > 0
+    || value.order.length > 0
+    || Object.keys(value.added).length > 0;
 }
 
 function isRecord(value: unknown): value is Record<string, unknown> {

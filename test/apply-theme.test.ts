@@ -115,6 +115,30 @@ describe('theme:apply', () => {
     }
   });
 
+  it('writes added sections and the arranged order into the JSON template', async () => {
+    const source = await themeDir();
+    const server = await pluginServer({
+      page: {
+        hidden: [],
+        settings: {},
+        order: ['cta', 'hero', 'faq'],
+        added: { faq: { type: 'faq' } },
+      },
+    });
+
+    try {
+      const { stdout } = await apply(source, server.url);
+      expect(stdout).toContain('sections: added faq (faq)');
+      expect(stdout).toContain('order: hero, cta → cta, hero, faq');
+      const written = JSON.parse(await readFile(join(source, 'templates', 'page.json'), 'utf8'));
+      expect(written.sections.faq).toEqual({ type: 'faq' });
+      expect(written.order).toEqual(['cta', 'hero', 'faq']);
+      expect(server.cleared).toEqual(['page']);
+    } finally {
+      server.close();
+    }
+  });
+
   it('leaves the theme alone when nothing is overridden', async () => {
     const source = await themeDir();
     const server = await pluginServer({});

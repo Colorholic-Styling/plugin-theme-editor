@@ -37,11 +37,12 @@
   ]
 }
 {% endschema %}
+{% assign primary_label = section.settings.primary_label | default: section.settings.primary.label %}
 <section class="hero hero--{{ section.settings.theme | escape }}">
-  {% if section.settings.eyebrow != blank %}<p>{{ section.settings.eyebrow | escape }}</p>{% endif %}
-  <h1>{{ section.settings.title | escape }}</h1>
-  {% if section.settings.bodyHtml != blank %}<div>{{ section.settings.bodyHtml }}</div>{% endif %}
-  {% if section.settings.primary_label != blank and section.settings.primary_url != blank %}
-  <a class="button button--primary" href="{{ section.settings.primary_url | escape }}">{{ section.settings.primary_label | escape }}</a>
+  {% if section.settings.eyebrow != blank %}<p data-theme-editor-field="{{ section.editor.fields.eyebrow | escape }}">{{ section.settings.eyebrow | escape }}</p>{% endif %}
+  <h1 data-theme-editor-field="{{ section.editor.fields.title | escape }}">{{ section.settings.title | escape }}</h1>
+  {% if section.settings.bodyHtml != blank %}<div data-theme-editor-field="{{ section.editor.fields.bodyHtml | escape }}">{{ section.settings.bodyHtml }}</div>{% endif %}
+  {% if primary_label != blank and section.settings.primary_url != blank %}
+  <a class="button button--primary" href="{{ section.settings.primary_url | escape }}">{{ primary_label | escape }}</a>
   {% endif %}
 </section>

@@ -25,9 +25,19 @@ function viewData(overrides: Record<string, unknown> = {}) {
     templates: [{ id: 'page', label: 'Page', selected: true }],
     dashboardHref: '/admin/plugins/theme-editor',
     canEdit: true,
+    canEditStructure: true,
+    canPublish: true,
+    hasPending: false,
+    pendingTemplates: 0,
+    publishAction: '/admin/plugins/theme-editor/publish',
+    publishTarget: '',
     pages: [{ id: 12, label: 'Home · home', selected: true }],
     hasPages: true,
     visibilityAction: '/admin/plugins/theme-editor/visibility',
+    sectionOrderAction: '/admin/plugins/theme-editor/section-order',
+    sectionAddAction: '/admin/plugins/theme-editor/section-add',
+    sectionTypes: [{ type: 'hero', label: 'Hero' }],
+    hasSectionTypes: true,
     looseSections: [],
     hasLooseSections: false,
     selectedPage: { id: 12, name: 'Home' },
@@ -115,7 +125,13 @@ function viewData(overrides: Record<string, unknown> = {}) {
   };
 }
 
-interface RenderCall { hidden?: string[] }
+interface RenderCall {
+  hidden?: string[];
+  lect?: Record<string, unknown>;
+  fields?: FormData;
+  order?: string[];
+  added?: Record<string, { type: string }>;
+}
 
 async function mountEditor(
   overrides: Record<string, unknown> = {},
@@ -240,6 +256,49 @@ describe('editor page visibility toggle', () => {
     expect(renders).toEqual([{ hidden: ['hero'] }]);
   });
 
+  it('reorders template sections from the drag handle keyboard controls', async () => {
+    const sections = [
+      {
+        key: 'hero', type: 'hero', label: 'Hero', blockIndex: 0, blockNumber: 1,
+        blockTitle: 'Hello', hasBlock: true, hidden: false, selected: true,
+        href: '/admin/plugins/theme-editor/editor?section=hero&block=0',
+      },
+      {
+        key: 'cta', type: 'cta', label: 'Cta', blockIndex: null, blockNumber: 0,
+        blockTitle: '', hasBlock: false, hidden: false, selected: false,
+        href: '/admin/plugins/theme-editor/editor?section=cta',
+      },
+    ];
+    const { renders, fetchMock } = await mountEditor({
+      sections,
+      editorStateJson: JSON.stringify({
+        themeId: 'example-theme', templateId: 'page', pageId: 12,
+        lect: { _type: 'home', _blocks: [{ _id: 'h', _type: 'hero', _weight: 10 }] },
+        languages: ['en'], language: 'en', canEdit: true,
+        sections: sections.map(({ key, type, label, blockIndex }) => ({ key, type, label, blockIndex })),
+      }),
+    });
+    const firstHandle = document.querySelector('[data-theme-editor-drag-handle]') as HTMLButtonElement;
+    firstHandle.dispatchEvent(new KeyboardEvent('keydown', {
+      key: 'ArrowDown', bubbles: true, cancelable: true,
+    }));
+
+    for (let attempt = 0; attempt < 100 && renders.length === 0; attempt += 1) {
+      await new Promise((resolve) => setTimeout(resolve, 5));
+    }
+    const rows = [...document.querySelectorAll('[data-theme-editor-section-row]')]
+      .map((row) => row.getAttribute('data-section'));
+    expect(rows).toEqual(['cta', 'hero']);
+    const orderCall = fetchMock.mock.calls.find((call) => String(call[0]).includes('/section-order'));
+    expect(orderCall).toBeTruthy();
+    const body = orderCall?.[1]?.body as FormData;
+    expect(JSON.parse(String(body.get('order')))).toEqual(['cta', 'hero']);
+    expect(renders).toContainEqual({ order: ['cta', 'hero'], added: {} });
+    const publish = document.querySelector('[data-theme-editor-publish]') as HTMLFormElement;
+    expect(publish.hidden).toBe(false);
+    expect(document.querySelector('[data-theme-editor-pending-count]')?.textContent?.trim()).toBe('1');
+  });
+
   it('shows the settings modes when a block is focused without a reload', async () => {
     // The page itself is selected, which is what the editor opens on when the
     // URL carries no block.
@@ -263,6 +322,132 @@ describe('editor page visibility toggle', () => {
     expect(schemaLink.getAttribute('href')).toContain('settings=schema');
     expect(valuesLink.getAttribute('href')).toContain('block=0');
     expect(valuesLink.getAttribute('href')).not.toContain('settings=schema');
+  });
+
+  it('selects a block only from its Edit badge, leaving ordinary preview content interactive', async () => {
+    await mountEditor({
+      selectedBlock: '',
+      pageSelected: true,
+      schemaBlock: '',
+    });
+    const preview = document.querySelector('[data-theme-editor-preview]') as HTMLIFrameElement;
+    const previewDocument = preview.contentDocument;
+    if (!previewDocument) throw new Error('Preview document unavailable');
+    previewDocument.body.innerHTML = `
+      <div data-theme-editor-block="0">
+        <a class="theme-editor-select" href="/editor?block=0"><span>Edit hero</span></a>
+        <button type="button" data-preview-action>Preview action</button>
+      </div>`;
+    preview.dispatchEvent(new Event('load'));
+
+    const selected = document.querySelector('[data-theme-editor-selected-block]') as HTMLInputElement;
+    const action = previewDocument.querySelector('[data-preview-action]') as HTMLButtonElement;
+    action.dispatchEvent(new Event('click', { bubbles: true, cancelable: true }));
+    expect(selected.value).toBe('');
+
+    const badge = previewDocument.querySelector('.theme-editor-select span') as HTMLElement;
+    badge.dispatchEvent(new Event('click', { bubbles: true, cancelable: true }));
+    expect(selected.value).toBe('0');
+  });
+
+  it('edits annotated preview text and mirrors it into the inspector without losing the caret', async () => {
+    const { renders } = await mountEditor();
+    const preview = document.querySelector('[data-theme-editor-preview]') as HTMLIFrameElement;
+    const previewDocument = preview.contentDocument;
+    if (!previewDocument) throw new Error('Preview document unavailable');
+    previewDocument.body.innerHTML = `
+      <div data-theme-editor-block="0">
+        <a class="theme-editor-select" href="/editor?block=0"></a>
+        <h1 data-theme-editor-field="field:/_blocks/0/title/en">Hello</h1>
+      </div>`;
+    preview.dispatchEvent(new Event('load'));
+
+    const heading = previewDocument.querySelector('[data-theme-editor-field]') as HTMLElement;
+    expect(heading.getAttribute('contenteditable')).toBe('plaintext-only');
+    heading.dispatchEvent(new Event('click', { bubbles: true, cancelable: true }));
+
+    const text = heading.firstChild;
+    if (!text) throw new Error('Editable heading text unavailable');
+    const caret = previewDocument.createRange();
+    caret.setStart(text, 2);
+    caret.collapse(true);
+    const selection = previewDocument.getSelection();
+    selection?.removeAllRanges();
+    selection?.addRange(caret);
+    const reposition = new MouseEvent('click', { bubbles: true, cancelable: true });
+    heading.dispatchEvent(reposition);
+    expect(reposition.defaultPrevented).toBe(false);
+    expect(selection?.anchorNode).toBe(text);
+    expect(selection?.anchorOffset).toBe(2);
+
+    heading.textContent = 'Edited in preview';
+    heading.dispatchEvent(new Event('input', { bubbles: true }));
+
+    const input = document.querySelector('[name="field:/_blocks/0/title/en"]') as HTMLInputElement;
+    expect(input.value).toBe('Edited in preview');
+    // The input event normally redraws after 250 ms. Inline editing suppresses
+    // that render so the contenteditable node — and its caret — survive.
+    await new Promise((resolve) => setTimeout(resolve, 300));
+    expect(renders).toEqual([]);
+
+    heading.dispatchEvent(new Event('focusout', { bubbles: true }));
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    expect(renders).toHaveLength(1);
+    expect(renders[0]?.fields?.get('field:/_blocks/0/title/en')).toBe('Edited in preview');
+  });
+
+  it('reveals the matching input inside the inspector without scrolling the page', async () => {
+    await mountEditor();
+    const preview = document.querySelector('[data-theme-editor-preview]') as HTMLIFrameElement;
+    const previewDocument = preview.contentDocument;
+    if (!previewDocument) throw new Error('Preview document unavailable');
+    previewDocument.body.innerHTML = `
+      <div data-theme-editor-block="0">
+        <h1 data-theme-editor-field="field:/_blocks/0/title/en">Hello</h1>
+      </div>`;
+    preview.dispatchEvent(new Event('load'));
+
+    const fieldsScroll = document.querySelector('[data-theme-editor-fields-scroll]') as HTMLElement;
+    const input = document.querySelector('[name="field:/_blocks/0/title/en"]') as HTMLInputElement;
+    const nativeScroll = vi.spyOn(input, 'scrollIntoView');
+    vi.spyOn(fieldsScroll, 'getBoundingClientRect').mockReturnValue({
+      top: 100, right: 400, bottom: 300, left: 0, width: 400, height: 200, x: 0, y: 100,
+      toJSON: () => ({}),
+    });
+    vi.spyOn(input, 'getBoundingClientRect').mockReturnValue({
+      top: 310, right: 380, bottom: 350, left: 20, width: 360, height: 40, x: 20, y: 310,
+      toJSON: () => ({}),
+    });
+
+    const heading = previewDocument.querySelector('[data-theme-editor-field]') as HTMLElement;
+    heading.dispatchEvent(new MouseEvent('click', { bubbles: true, cancelable: true }));
+
+    expect(nativeScroll).not.toHaveBeenCalled();
+    expect(fieldsScroll.scrollTop).toBe(58);
+  });
+
+  it('restores an inline value when Escape is pressed', async () => {
+    const { renders } = await mountEditor();
+    const preview = document.querySelector('[data-theme-editor-preview]') as HTMLIFrameElement;
+    const previewDocument = preview.contentDocument;
+    if (!previewDocument) throw new Error('Preview document unavailable');
+    previewDocument.body.innerHTML = `
+      <div data-theme-editor-block="0">
+        <h1 data-theme-editor-field="field:/_blocks/0/title/en">Hello</h1>
+      </div>`;
+    preview.dispatchEvent(new Event('load'));
+
+    const heading = previewDocument.querySelector('[data-theme-editor-field]') as HTMLElement;
+    heading.dispatchEvent(new Event('click', { bubbles: true, cancelable: true }));
+    heading.textContent = 'Discard me';
+    heading.dispatchEvent(new Event('input', { bubbles: true }));
+    heading.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', bubbles: true }));
+
+    const input = document.querySelector('[name="field:/_blocks/0/title/en"]') as HTMLInputElement;
+    expect(heading.textContent).toBe('Hello');
+    expect(input.value).toBe('Hello');
+    expect(renders).toHaveLength(1);
+    expect(renders[0]?.fields?.get('field:/_blocks/0/title/en')).toBe('Hello');
   });
 
   it('switches between values and schema without leaving the page', async () => {

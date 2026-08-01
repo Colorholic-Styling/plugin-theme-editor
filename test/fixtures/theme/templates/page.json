@@ -18,7 +18,24 @@
         "pictureAlt": "{{ page.blocks[0].pictureAlt }}"
       }
     },
-    "features": { "type": "features", "settings": { "title": "{{ page.blocks[1].title }}" } },
+    "features": {
+      "type": "features",
+      "settings": {
+        "eyebrow": "{{ page.blocks[1].eyebrow }}",
+        "title": "{{ page.blocks[1].title }}",
+        "bodyHtml": "{{ page.blocks[1].bodyHtml }}"
+      },
+      "blocks": {
+        "feature-1": {
+          "type": "feature",
+          "settings": {
+            "name": "{{ page.blocks[1].features[0].name }}",
+            "description": "{{ page.blocks[1].features[0].description }}"
+          }
+        }
+      },
+      "block_order": ["feature-1"]
+    },
     "services": { "type": "services", "settings": { "title": "{{ page.blocks[2].title }}" } },
     "steps": { "type": "steps", "settings": { "title": "{{ page.blocks[3].title }}" } },
     "team": { "type": "team", "settings": { "title": "{{ page.blocks[4].title }}" } },

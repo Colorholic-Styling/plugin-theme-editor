@@ -147,7 +147,10 @@ describe('browser preview renderer', () => {
     expect(previewHtml()).not.toContain('Loading preview');
     // The theme's head comes from the render too, not from the frame.
     expect(previewHead()).toContain('site.css');
+    expect(previewHead()).toContain('pointer-events:none');
+    expect(previewHead()).toContain('pointer-events:auto');
     expect(previewHtml()).toContain('Hello from the browser');
+    expect(previewHtml()).toContain('data-theme-editor-field="field:/_blocks/0/title/en"');
     // The selection overlay is part of the shared renderer, so it must survive
     // the trip through the browser build too.
     expect(previewHtml()).toContain('data-theme-editor-block="0"');

@@ -76,6 +76,7 @@ async function renderPreview(
     hidden?: string[];
     news?: CmsPage[];
     settingOverrides?: Record<string, Record<string, string>>;
+    structure?: { order: string[]; added: Record<string, { type: string }> };
   } = {},
 ): Promise<string> {
   const pluginEnv = env();
@@ -95,7 +96,8 @@ async function renderPreview(
     defaultLanguage: 'en',
     editorHref: `/admin/plugins/theme-editor/editor?theme=example-theme&template=${template.id}&page_id=${fixture.id}&language=en`,
     selectedBlock: options.selectedBlock === undefined ? 0 : options.selectedBlock,
-  }, template, new Set(options.hidden ?? []), options.settingOverrides ?? {});
+  }, template, new Set(options.hidden ?? []), options.settingOverrides ?? {},
+  options.structure ?? { order: [], added: {} });
 }
 
 /** In-memory stand-in for the THEME_OVERRIDES namespace. */
@@ -595,13 +597,52 @@ describe('theme editor routes', () => {
     const html = await renderPreview(page());
     expect(html).toContain('Hello from the theme');
     expect(html).toContain('class="hero hero--cream');
-    expect(html).toContain('<a class="button button--primary" href="/book">Book</a>');
+    expect(html).toContain('href="/book"');
+    expect(html).toContain('>Book</a>');
     expect(html).not.toContain('{% schema %}');
     expect(html).toContain('theme-editor-block is-selected');
     expect(html).toContain('data-theme-editor-block="0"');
+    expect(html).toContain('data-theme-editor-field="field:/_blocks/0/title/en"');
+    expect(html).toContain('data-theme-editor-field="field:/_blocks/0/primary/label/en"');
+    // Rich HTML is not reversible through a plaintext contenteditable, so the
+    // compiler deliberately leaves this opt-in marker inert.
+    expect(html).toContain('<div data-theme-editor-field=""><p>Editable copy.</p></div>');
     expect(html).toContain('/admin/plugins/theme-editor/editor?theme=example-theme&amp;template=page&amp;page_id=12');
     expect(html).toContain('/admin/plugins/theme-editor/theme/assets/site.css?theme=example-theme&v=');
     expect(html).not.toContain('href="/assets/site.css');
+  });
+
+  it('automatically annotates direct text in shared headings and repeated section blocks', async () => {
+    const fixture = page();
+    const blocks = fixture.lect._blocks as Array<Record<string, unknown>>;
+    blocks.push({
+      _id: 'features-1',
+      _type: 'features',
+      _weight: 20,
+      eyebrow: { en: 'Why us' },
+      title: { en: 'Automatically editable' },
+      body: { en: '<p>Rich introduction.</p>' },
+      features: [{
+        name: { en: 'Direct item name' },
+        description: { en: 'Direct item description' },
+      }],
+    });
+
+    const html = await renderPreview(fixture);
+    expect(html).toContain(
+      '<p data-theme-editor-field="field:/_blocks/1/eyebrow/en">Why us</p>',
+    );
+    expect(html).toContain(
+      '<h2 data-theme-editor-field="field:/_blocks/1/title/en">Automatically editable</h2>',
+    );
+    expect(html).toContain(
+      '<h3 data-theme-editor-field="field:/_blocks/1/features/0/name/en">Direct item name</h3>',
+    );
+    expect(html).toContain(
+      '<p data-theme-editor-field="field:/_blocks/1/features/0/description/en">Direct item description</p>',
+    );
+    expect(html).toContain('<div><p>Rich introduction.</p></div>');
+    expect(html).not.toContain('data-theme-editor-field="field:/_blocks/1/body/en"');
   });
 
   it('serves an empty frame that loads its own data and templates', async () => {
@@ -918,7 +959,12 @@ describe('theme editor routes', () => {
     expect(await response.json()).toEqual({
       theme: 'example-theme',
       templates: {
-        page: { hidden: ['cta'], settings: { hero: { title: '{{ page.blocks[0].eyebrow }}' } } },
+        page: {
+          hidden: ['cta'],
+          settings: { hero: { title: '{{ page.blocks[0].eyebrow }}' } },
+          order: [],
+          added: {},
+        },
       },
     });
 
@@ -1096,9 +1142,11 @@ describe('theme editor routes', () => {
     const nothingPending = await renderEditorSection({
       canPublish: true,
       hasPending: false,
+      pendingTemplates: 0,
       publishAction: '/admin/plugins/theme-editor/publish',
     });
-    expect(nothingPending).not.toContain('action="/admin/plugins/theme-editor/publish"');
+    expect(nothingPending).toContain('action="/admin/plugins/theme-editor/publish"');
+    expect(nothingPending).toContain('data-theme-editor-publish hidden');
   });
 
   it('lists every section the template declares, not only the ones the page has blocks for', async () => {
@@ -1128,12 +1176,80 @@ describe('theme editor routes', () => {
     expect(sections[0].href).toContain('block=0');
     expect(sections[1].href).toContain('section=features');
     expect(sections[1].href).not.toContain('block=');
+    expect(data.sectionTypes).toEqual(expect.arrayContaining([
+      { type: 'hero', label: 'Hero' },
+      { type: 'cta', label: 'Cta' },
+    ]));
 
     const html = await renderEditorSection(data);
     expect(html).toContain('Template sections');
+    expect(html).toContain('action="/admin/plugins/theme-editor/section-add"');
+    expect(html).toContain('data-theme-editor-drag-handle');
     expect(html).toContain('data-section="cta"');
     expect(html).toContain('name="section" value="contact"');
     expect(html).toContain('· no page block');
+  });
+
+  it('stores a dragged section order and uses it for the editor and preview', async () => {
+    const fixture = page();
+    mockCms(({ url }) => {
+      if (url.pathname === '/__cms/content-meta') return contentMeta();
+      if (url.pathname === '/__cms/pages') {
+        return { pages: url.searchParams.get('page_type') === 'home' ? [fixture] : [], total: 1 };
+      }
+      if (url.pathname === '/__cms/pages/12') return { page: fixture };
+      throw new Error(`Unexpected call ${url}`);
+    });
+    const order = ['cta', 'hero', 'features', 'services', 'steps', 'team', 'faq', 'news', 'contact'];
+
+    const response = await plugin.fetch(
+      adminRequest('/__plugin/admin/section-order', {
+        method: 'POST',
+        headers: { 'content-type': 'application/x-www-form-urlencoded', accept: 'application/json' },
+        body: new URLSearchParams({
+          theme: 'example-theme', template: 'page', order: JSON.stringify(order),
+        }),
+      }),
+      env(),
+    );
+    expect(response.status).toBe(200);
+    expect(await response.json()).toMatchObject({ ok: true, order });
+    expect(JSON.parse(state.store.get(themeOverridesKey('example-theme')) as string))
+      .toEqual({ page: { hidden: [], settings: {}, order } });
+
+    const editor = await plugin.fetch(
+      adminRequest('/__plugin/admin/editor?theme=example-theme&template=page&page_id=12&language=en'),
+      env(),
+    );
+    const data = await editor.json() as { sections: Array<{ key: string }> };
+    expect(data.sections.map((entry) => entry.key)).toEqual(order);
+
+    const preview = await plugin.fetch(
+      adminRequest('/__plugin/admin/preview/data?theme=example-theme&template=page&page_id=12&language=en'),
+      env(),
+    );
+    expect((await preview.json() as { structure: { order: string[] } }).structure.order).toEqual(order);
+  });
+
+  it('adds a section type discovered from the theme sections folder', async () => {
+    mockCms(({ url }) => {
+      if (url.pathname === '/__cms/content-meta') return contentMeta();
+      throw new Error(`Unexpected call ${url}`);
+    });
+
+    const response = await plugin.fetch(
+      adminRequest('/__plugin/admin/section-add', {
+        method: 'POST',
+        headers: { 'content-type': 'application/x-www-form-urlencoded', accept: 'application/json' },
+        body: new URLSearchParams({ theme: 'example-theme', template: 'page', type: 'hero' }),
+      }),
+      env(),
+    );
+    expect(response.status).toBe(200);
+    expect(await response.json()).toMatchObject({ ok: true, key: 'hero-2', type: 'hero' });
+    const stored = JSON.parse(state.store.get(themeOverridesKey('example-theme')) as string);
+    expect(stored.page.added).toEqual({ 'hero-2': { type: 'hero' } });
+    expect(stored.page.order.at(-1)).toBe('hero-2');
   });
 
   it('opens a section the page has no block for on Schema, with no Values mode', async () => {
@@ -1326,6 +1442,17 @@ describe('theme editor routes', () => {
     const html = await renderPreview(fixture, { hidden: ['hero'] });
     expect(html).not.toContain('class="hero hero--cream');
     expect(html).toContain('Preview site');
+  });
+
+  it('renders pending section additions and order before they are published', async () => {
+    const html = await renderPreview(page(), {
+      structure: {
+        order: ['cta', 'hero', 'faq-2'],
+        added: { 'faq-2': { type: 'faq' } },
+      },
+    });
+    expect(html.indexOf('class="cta')).toBeLessThan(html.indexOf('class="hero'));
+    expect((html.match(/class="faq/g) ?? []).length).toBeGreaterThanOrEqual(1);
   });
 
   it('answers a toggle with the new hidden set so nothing has to reload', async () => {

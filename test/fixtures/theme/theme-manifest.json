@@ -23,6 +23,7 @@
     "/snippets/footer.liquid",
     "/snippets/head.liquid",
     "/snippets/header.liquid",
+    "/snippets/section-head.liquid",
     "/templates/content-page.json",
     "/templates/message.json",
     "/templates/news-article.json",

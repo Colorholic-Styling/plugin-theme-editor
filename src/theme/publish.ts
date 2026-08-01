@@ -1,4 +1,5 @@
 import type { TemplateOverrides } from './overrides';
+import { mergeSectionOrder } from './templates';
 
 /**
  * Folds the editor's override layer into a template's own JSON. This is the
@@ -12,6 +13,25 @@ export function applyOverridesToTemplate(
   const next = structuredClone(isRecord(template) ? template : {});
   const changes: string[] = [];
 
+  const sections = isRecord(next.sections) ? next.sections : {};
+  for (const [sectionKey, section] of Object.entries(overrides.added ?? {})) {
+    if (isRecord(sections[sectionKey])) continue;
+    sections[sectionKey] = { type: section.type };
+    changes.push(`sections: added ${sectionKey} (${section.type})`);
+  }
+  next.sections = sections;
+
+  if ((overrides.order ?? []).length > 0) {
+    const sourceOrder = Array.isArray(next.order)
+      ? next.order.filter((key): key is string => typeof key === 'string')
+      : [];
+    const arranged = mergeSectionOrder(sourceOrder, overrides.order ?? [], Object.keys(sections));
+    if (JSON.stringify(arranged) !== JSON.stringify(sourceOrder)) {
+      changes.push(`order: ${sourceOrder.join(', ')} → ${arranged.join(', ')}`);
+      next.order = arranged;
+    }
+  }
+
   const hidden = new Set(overrides.hidden);
   if (hidden.size && Array.isArray(next.order)) {
     const kept = next.order.filter((key) => typeof key !== 'string' || !hidden.has(key));
@@ -21,7 +41,6 @@ export function applyOverridesToTemplate(
     }
   }
 
-  const sections = isRecord(next.sections) ? next.sections : {};
   for (const [sectionKey, settings] of Object.entries(overrides.settings)) {
     const section = sections[sectionKey];
     // A section the template no longer declares is skipped rather than

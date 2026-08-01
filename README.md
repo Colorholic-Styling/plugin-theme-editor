@@ -18,6 +18,8 @@ Visual theme editing for 0xCMS. The first development slice can:
 - show or hide a theme template's sections without reloading the page or the
   preview, stored per template so the change applies to every page that
   template renders;
+- drag template sections into a new JSON `order`, and add another instance
+  from the Liquid files available under the theme's `sections/` folder;
 - write those template edits back into the theme's own files with
   `npm run theme:apply`, or publish them into the theme bucket;
 - clone a theme from GitHub and commit the templates back to it, without a
@@ -112,6 +114,11 @@ attached two ways:
 A declared section that reads no block, or mixes several, renders unwrapped
 rather than claiming a selection it cannot represent.
 
+The block overlay is visual across the whole block but accepts pointer events
+only on its **Edit …** badge. Hovering anywhere on the block still reveals the
+blue border and badge; clicking ordinary preview content reaches that content,
+including any `data-theme-editor-field` inline editor.
+
 ### In-browser rendering
 
 The Worker renders no theme HTML. `/preview` returns an empty frame, and
@@ -138,6 +145,42 @@ URLs travel as `data-` attributes on the `<iframe>`, since a JSON payload in a
 The first render writes the whole document, so the theme's own `<head>` is
 installed; later renders replace the body alone, keeping the stylesheet from
 being refetched and the scroll position from jumping.
+
+### Editing plain text in the preview
+
+For JSON templates, the preview compiler automatically annotates an existing
+semantic element when its entire text content is one directly bound setting.
+This includes settings rendered in the section itself, settings passed through
+the shared `section-head` snippet, and repeated template blocks such as feature,
+service, step, team, and FAQ items:
+
+```liquid
+<h1>{{ section.settings.title | escape }}</h1>
+```
+
+The preview-only source becomes the equivalent of:
+
+```liquid
+<h1 data-theme-editor-field="{{ section.editor.fields.title | escape }}">
+  {{ section.settings.title | escape }}
+</h1>
+```
+
+The compiler exposes an editor field only when the setting is a direct
+`{{ page.blocks[N].value }}` binding backed by an editable plain-text value;
+indexed paths such as `page.blocks[N].features[0].name` are supported too.
+Literals, computed Liquid, missing fields, rich HTML, mixed static/dynamic text,
+and elements containing several settings keep their normal inspector controls.
+Complex markup can still opt in explicitly with the
+`data-theme-editor-field` form above; on the public site `section.editor` may be
+absent, which produces an inert empty attribute.
+
+In the editor, clicking an annotated element selects its block and makes the
+existing element plaintext-editable. Keystrokes copy into the matching
+`field:/...` inspector input without repainting the frame, so the caret remains
+stable. Blur or Enter runs one normal Liquid render to apply escaping and
+conditionals; Escape restores the value from before that inline edit. Saving
+still uses the existing Values form and versioned CMS page API.
 
 The frame is recognised by the placeholder its shell carries, never by
 `readyState`. Every iframe holds a blank document until its navigation commits,
@@ -473,8 +516,9 @@ npm run theme:apply                # write the theme, then clear what applied
 ```
 
 It reads `/overrides` from the running plugin, merges each template's overrides
-into the theme's own JSON — hidden keys leave `order`, changed bindings replace
-what the section declares — writes the file, and only then clears what it
+into the theme's own JSON — additions extend `sections`, rearrangements replace
+`order`, hidden keys leave it, and changed bindings replace what the section
+declares — writes the file, and only then clears what it
 applied, so a failed write leaves the edit in the editor rather than losing it
 between the two. A hidden section keeps its definition and loses only its place
 in `order`, so showing it again is putting the key back rather than rebuilding
@@ -542,7 +586,7 @@ All of it is an enhancement: the editing session needs the CMS's `content:write`
 permission, and a user without it gets an editor that behaves exactly as it did
 before.
 
-### Section visibility
+### Template sections
 
 Hiding a section drops its key from the `order` the preview compiles, leaving
 the theme's own template file untouched. That decision belongs to the template
@@ -565,8 +609,10 @@ One key per theme rather than per template keeps reading them all a point read
 instead of a scan, keeps that read-modify-write to a single row, and bounds the
 key count by the number of themes.
 
-Hidden *keys* are stored rather than a copy of the order array, so a section
-the theme author adds later shows up instead of being lost to a stale snapshot.
+Hidden *keys* are stored rather than a copy of the order array. An order is
+stored only after someone deliberately rearranges or adds sections, and keys a
+theme author adds later are appended when that order is applied rather than
+being lost to the older snapshot.
 Reads degrade to "nothing hidden" when the CMS cannot be reached — an
 unreachable store must never blank out a preview, and this layer only affects
 the editor's own preview, since the public site renders from the published
@@ -581,7 +627,10 @@ Installs predating this keep their edits: entries still in the legacy
 collapsed into the per-theme record, and deleted from KV — so the namespace
 drains on its own and can then be unbound.
 
-The toggle posts to `/admin/plugins/theme-editor/visibility` and needs
+The toggle posts to `/admin/plugins/theme-editor/visibility`; drag/drop posts
+the complete validated sequence to `/admin/plugins/theme-editor/section-order`;
+and the Add tool posts a section type discovered from `sections/*.liquid` to
+`/admin/plugins/theme-editor/section-add`. All need
 `theme-editor:write`. When the frame can be redrawn in the page, the editor
 sends that post itself, updates the row, and hands the returned hidden set to
 the renderer — no page navigation and no frame reload. `setSectionHidden`
@@ -600,8 +649,7 @@ every declared section stays reachable.
    (features, services, steps) get declared labels and controls too; the
    section-level `settings[]` already come from the theme.
 2. Add block and item add/delete/reorder operations with the CMS structured
-   editing contract, and extend the override layer from section visibility to
-   section reordering.
+   editing contract.
 3. Add draft preview support for related pages, media proxy behavior, template
    diagnostics, and responsive viewport controls.
 4. Version the bucket's theme folders (`example-theme/v3/…`) for rollback,

@@ -21,6 +21,10 @@
   var saveButton = root.querySelector('[data-theme-editor-save-button]');
   var saveStatus = root.querySelector('[data-theme-editor-save-status]');
   var preview = root.querySelector('[data-theme-editor-preview]');
+  var sectionList = root.querySelector('[data-theme-editor-section-list]');
+  var orderStatus = root.querySelector('[data-theme-editor-order-status]');
+  var publishForm = root.querySelector('[data-theme-editor-publish]');
+  var pendingCount = root.querySelector('[data-theme-editor-pending-count]');
   if (!editorAction || !stateSource || !form || !fieldsHost || !selectedLabel || !selectedType
     || !selectedBlockInput || !selectedSectionInput || !panelViewport || !panelTrack
     || !listPanel || !settingsPanel || !listHeading) return;
@@ -63,6 +67,7 @@
   var saving = false;
   var previewTimer = 0;
   var bindingTimer = 0;
+  var inlineEdit = null;
   // Moving through sections quickly can leave more than one bindings request
   // in flight; only the newest may draw. Otherwise a slow earlier answer would
   // land last and show the wrong section's bindings.
@@ -74,6 +79,7 @@
     : 'settings';
 
   setInspectorView(inspectorView, false, false);
+  if (sectionList && state.canEdit) setupSectionOrdering();
   window.addEventListener('resize', syncPanelHeight);
 
   form.addEventListener('input', function (event) {
@@ -82,7 +88,10 @@
     if (target.name.indexOf('field:/') === 0) {
       dirty = true;
       clearSaveStatus();
-      schedulePreviewRender();
+      // The preview node is already showing keystrokes made inside it. A full
+      // body render here would replace that node and lose the caret; blur does
+      // one canonical Liquid render after inline editing finishes.
+      if (!inlineEdit || inlineEdit.fieldName !== target.name) schedulePreviewRender();
       return;
     }
     if (target.name.indexOf('setting:') === 0) {
@@ -397,6 +406,7 @@
     try {
       var previewDocument = preview.contentDocument;
       if (!previewDocument || !previewDocument.documentElement) return;
+      prepareInlineFields(previewDocument);
       if (previewDocument.documentElement.hasAttribute('data-theme-editor-bound')) {
         selectBlockInPreview(blockFromValue(selectedBlockInput.value));
         return;
@@ -405,6 +415,19 @@
       previewDocument.addEventListener('click', function (event) {
         var target = event.target;
         if (!target || typeof target.closest !== 'function') return;
+
+        var editable = target.closest('[data-theme-editor-field]');
+        if (editable && beginInlineEdit(editable)) {
+          // A contenteditable element's native click and drag behavior places
+          // the caret or selects text. Do not cancel or replace that selection.
+          // Editable links are the exception: suppress navigation and preserve
+          // the click position explicitly.
+          if (target.closest('a[href]')) {
+            placeCaretFromClick(editable, event);
+            event.preventDefault();
+          }
+          return;
+        }
 
         var link = target.closest('.theme-editor-select');
         if (link) {
@@ -429,6 +452,36 @@
 
         focusTarget(null, '', editorHref(null, ''), true, 'list');
       });
+      previewDocument.addEventListener('input', function (event) {
+        var target = event.target;
+        if (!target || !target.hasAttribute || !target.hasAttribute('data-theme-editor-field')) return;
+        syncInlineField(target);
+      });
+      previewDocument.addEventListener('focusout', function (event) {
+        if (inlineEdit && event.target === inlineEdit.element) finishInlineEdit(false);
+      });
+      previewDocument.addEventListener('keydown', function (event) {
+        var target = event.target;
+        if (!inlineEdit || target !== inlineEdit.element) return;
+        if (event.key === 'Escape') {
+          event.preventDefault();
+          finishInlineEdit(true);
+          if (typeof target.blur === 'function') target.blur();
+          return;
+        }
+        if (event.key === 'Enter') {
+          event.preventDefault();
+          if (typeof target.blur === 'function') target.blur();
+          if (inlineEdit && target === inlineEdit.element) finishInlineEdit(false);
+        }
+      });
+      previewDocument.addEventListener('paste', function (event) {
+        var target = event.target;
+        if (!inlineEdit || target !== inlineEdit.element || !event.clipboardData) return;
+        event.preventDefault();
+        insertPlainText(previewDocument, event.clipboardData.getData('text/plain'));
+        syncInlineField(target);
+      });
       selectBlockInPreview(blockFromValue(selectedBlockInput.value));
     } catch (_error) {
       // If preview hosting moves to another origin, its target="_top" links
@@ -440,6 +493,156 @@
     return !!target.closest(
       'a,button,input,select,textarea,label,summary,details'
     );
+  }
+
+  function prepareInlineFields(previewDocument) {
+    previewDocument.querySelectorAll('[data-theme-editor-field]').forEach(function (element) {
+      var fieldName = element.getAttribute('data-theme-editor-field') || '';
+      if (!state.canEdit || fieldName.indexOf('field:/') !== 0) {
+        element.removeAttribute('contenteditable');
+        element.removeAttribute('role');
+        element.removeAttribute('aria-label');
+        return;
+      }
+      element.setAttribute('contenteditable', 'plaintext-only');
+      element.setAttribute('role', 'textbox');
+      element.setAttribute('aria-label', 'Edit content');
+      element.setAttribute('spellcheck', 'true');
+    });
+  }
+
+  function beginInlineEdit(element) {
+    if (!state.canEdit) return false;
+    var fieldName = element.getAttribute('data-theme-editor-field') || '';
+    if (fieldName.indexOf('field:/') !== 0) return false;
+    // Once editing has started, later clicks belong to the browser's native
+    // selection behavior. Reinitializing here would also make Escape restore
+    // the value from the most recent click instead of the original value.
+    if (inlineEdit && inlineEdit.element === element) return true;
+    var block = blockFromFieldName(fieldName);
+
+    if (settingsMode !== 'values') setSettingsMode('values', editorHref(block, ''));
+    if (blockFromValue(selectedBlockInput.value) !== block) {
+      focusTarget(block, '', editorHref(block, ''), true, 'settings');
+      // A pending save or a cancelled discard confirmation can keep the old
+      // selection. In that case there is no matching input to write safely.
+      if (blockFromValue(selectedBlockInput.value) !== block) return false;
+    } else {
+      setInspectorView('settings', true, false);
+    }
+
+    var input = namedFormField(fieldName);
+    if (!input || input.readOnly || input.disabled) return false;
+    inlineEdit = {
+      element: element,
+      fieldName: fieldName,
+      input: input,
+      originalText: element.textContent || '',
+      originalValue: input.value,
+      wasDirty: dirty
+    };
+    element.setAttribute('data-theme-editor-inline-active', '');
+    if (typeof element.focus === 'function') element.focus({ preventScroll: true });
+    revealInlineInput(input);
+    return true;
+  }
+
+  function revealInlineInput(input) {
+    if (!fieldsScroll || !fieldsScroll.contains(input)) return;
+    try {
+      var scrollRect = fieldsScroll.getBoundingClientRect();
+      var inputRect = input.getBoundingClientRect();
+      var inset = 8;
+      if (inputRect.top < scrollRect.top + inset) {
+        fieldsScroll.scrollTop += inputRect.top - scrollRect.top - inset;
+      } else if (inputRect.bottom > scrollRect.bottom - inset) {
+        fieldsScroll.scrollTop += inputRect.bottom - scrollRect.bottom + inset;
+      }
+    } catch (_error) {
+      // The preview remains editable when geometry is unavailable.
+    }
+  }
+
+  function syncInlineField(element) {
+    if (!inlineEdit || inlineEdit.element !== element) {
+      if (!beginInlineEdit(element)) return;
+    }
+    var value = (element.textContent || '').replace(/\u00a0/g, ' ');
+    inlineEdit.input.value = value;
+    inlineEdit.input.dispatchEvent(new Event('input', { bubbles: true }));
+  }
+
+  function finishInlineEdit(cancelled) {
+    if (!inlineEdit) return;
+    var editing = inlineEdit;
+    inlineEdit = null;
+    editing.element.removeAttribute('data-theme-editor-inline-active');
+
+    if (cancelled) {
+      editing.element.textContent = editing.originalText;
+      editing.input.value = editing.originalValue;
+      dirty = editing.wasDirty;
+    }
+
+    // Re-run the real template once so escaping, conditionals, and surrounding
+    // markup agree with what will be saved. This is deliberately not debounced:
+    // the edit has ended and replacing the preview node can no longer lose its
+    // caret.
+    renderPreview({ lect: state.lect, fields: new FormData(form) });
+  }
+
+  function blockFromFieldName(fieldName) {
+    var match = /^field:\/_blocks\/(\d+)\//.exec(fieldName);
+    return match ? blockFromValue(match[1]) : null;
+  }
+
+  function namedFormField(name) {
+    var found = null;
+    form.querySelectorAll('[name]').forEach(function (field) {
+      if (!found && field.name === name) found = field;
+    });
+    return found;
+  }
+
+  function placeCaretFromClick(element, event) {
+    try {
+      var previewDocument = element.ownerDocument;
+      var range = null;
+      if (typeof previewDocument.caretPositionFromPoint === 'function') {
+        var position = previewDocument.caretPositionFromPoint(event.clientX, event.clientY);
+        if (position) {
+          range = previewDocument.createRange();
+          range.setStart(position.offsetNode, position.offset);
+          range.collapse(true);
+        }
+      } else if (typeof previewDocument.caretRangeFromPoint === 'function') {
+        range = previewDocument.caretRangeFromPoint(event.clientX, event.clientY);
+      }
+      if (!range || (range.startContainer !== element && !element.contains(range.startContainer))) {
+        return false;
+      }
+      var selection = previewDocument.getSelection();
+      if (!selection) return false;
+      selection.removeAllRanges();
+      selection.addRange(range);
+      return true;
+    } catch (_error) {
+      return false;
+    }
+  }
+
+  function insertPlainText(previewDocument, value) {
+    var text = String(value || '').replace(/\s*\r?\n\s*/g, ' ');
+    var selection = previewDocument.getSelection && previewDocument.getSelection();
+    if (!selection || selection.rangeCount === 0) return;
+    var range = selection.getRangeAt(0);
+    range.deleteContents();
+    var node = previewDocument.createTextNode(text);
+    range.insertNode(node);
+    range.setStartAfter(node);
+    range.collapse(true);
+    selection.removeAllRanges();
+    selection.addRange(range);
   }
 
   async function saveChanges() {
@@ -753,6 +956,7 @@
       var hidden = Array.isArray(payload.hidden) ? payload.hidden : [];
       applyVisibility(form, hidden.indexOf(section) !== -1);
       if (button) button.disabled = false;
+      markTemplatePending();
       renderPreview({ hidden: hidden });
     } catch (_error) {
       // A failed toggle still has to say so, and the server round-trip is
@@ -776,6 +980,119 @@
         + ' section in every page using this template';
     }
     if (flag) flag.hidden = !hidden;
+  }
+
+  /** Native drag/drop plus arrow-key movement for the JSON template order. */
+  function setupSectionOrdering() {
+    var dragging = null;
+    var beforeDrag = '';
+    var queue = Promise.resolve();
+
+    sectionList.addEventListener('dragstart', function (event) {
+      var handle = event.target && event.target.closest
+        ? event.target.closest('[data-theme-editor-drag-handle]')
+        : null;
+      if (!handle) return;
+      dragging = handle.closest('[data-theme-editor-section-row]');
+      if (!dragging) return;
+      beforeDrag = sectionOrder().join('|');
+      dragging.classList.add('opacity-50');
+      if (event.dataTransfer) {
+        event.dataTransfer.effectAllowed = 'move';
+        event.dataTransfer.setData('text/plain', dragging.getAttribute('data-section') || '');
+      }
+    });
+
+    sectionList.addEventListener('dragover', function (event) {
+      if (!dragging) return;
+      var target = event.target && event.target.closest
+        ? event.target.closest('[data-theme-editor-section-row]')
+        : null;
+      if (!target || target === dragging || !sectionList.contains(target)) return;
+      event.preventDefault();
+      var rect = target.getBoundingClientRect();
+      var before = event.clientY < rect.top + rect.height / 2;
+      sectionList.insertBefore(dragging, before ? target : target.nextSibling);
+    });
+
+    sectionList.addEventListener('drop', function (event) {
+      if (dragging) event.preventDefault();
+    });
+
+    sectionList.addEventListener('dragend', function () {
+      if (!dragging) return;
+      dragging.classList.remove('opacity-50');
+      dragging = null;
+      var order = sectionOrder();
+      if (order.join('|') !== beforeDrag) enqueue(order);
+    });
+
+    sectionList.addEventListener('keydown', function (event) {
+      var handle = event.target && event.target.closest
+        ? event.target.closest('[data-theme-editor-drag-handle]')
+        : null;
+      if (!handle || (event.key !== 'ArrowUp' && event.key !== 'ArrowDown')) return;
+      var row = handle.closest('[data-theme-editor-section-row]');
+      var sibling = event.key === 'ArrowUp' ? row.previousElementSibling : row.nextElementSibling;
+      if (!row || !sibling || !sibling.hasAttribute('data-theme-editor-section-row')) return;
+      event.preventDefault();
+      if (event.key === 'ArrowUp') sectionList.insertBefore(row, sibling);
+      else sectionList.insertBefore(sibling, row);
+      handle.focus();
+      enqueue(sectionOrder());
+    });
+
+    function enqueue(order) {
+      if (orderStatus) orderStatus.textContent = 'Saving order…';
+      queue = queue.then(function () { return persist(order); });
+    }
+
+    async function persist(order) {
+      var action = sectionList.getAttribute('data-order-action') || '';
+      if (!action || typeof window.fetch !== 'function') {
+        window.location.reload();
+        return;
+      }
+      var body = new FormData();
+      body.set('theme', state.themeId);
+      body.set('template', state.templateId);
+      body.set('order', JSON.stringify(order));
+      try {
+        var response = await window.fetch(action, {
+          method: 'POST',
+          body: body,
+          headers: { accept: 'application/json', 'x-requested-with': 'XMLHttpRequest' },
+          credentials: 'same-origin'
+        });
+        var payload = await responsePayload(response);
+        if (!response.ok || !isRecord(payload) || payload.ok !== true) throw new Error('unavailable');
+        var saved = Array.isArray(payload.order) ? payload.order : order;
+        state.sections.sort(function (left, right) {
+          return saved.indexOf(left.key) - saved.indexOf(right.key);
+        });
+        if (orderStatus) orderStatus.textContent = 'Order saved';
+        markTemplatePending();
+        renderPreview({ order: saved, added: isRecord(payload.added) ? payload.added : {} });
+      } catch (_error) {
+        if (orderStatus) orderStatus.textContent = 'Could not save order';
+        window.location.reload();
+      }
+    }
+
+    function sectionOrder() {
+      return Array.prototype.map.call(
+        sectionList.querySelectorAll('[data-theme-editor-section-row]'),
+        function (row) { return row.getAttribute('data-section') || ''; }
+      ).filter(Boolean);
+    }
+  }
+
+  function markTemplatePending() {
+    if (!publishForm) return;
+    publishForm.hidden = false;
+    if (!pendingCount) return;
+    var count = Number.parseInt(pendingCount.textContent || '0', 10);
+    pendingCount.textContent = String(Number.isInteger(count) && count > 0 ? count : 1);
   }
 
   /**
@@ -822,7 +1139,9 @@
     if (!api) return false;
     try {
       var result = api.render(update);
-      if (result && typeof result.catch === 'function') result.catch(reloadPreview);
+      if (result && typeof result.then === 'function') {
+        result.then(bindPreview).catch(reloadPreview);
+      }
       return true;
     } catch (_error) {
       return false;

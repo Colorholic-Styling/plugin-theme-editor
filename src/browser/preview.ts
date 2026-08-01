@@ -28,6 +28,7 @@ interface PreviewData {
   template: ThemeTemplate;
   hidden: string[];
   settingOverrides: Record<string, Record<string, string>>;
+  structure: { order: string[]; added: Record<string, { type: string }> };
   runtime: Omit<ThemeRuntime, 'store'>;
 }
 
@@ -43,6 +44,9 @@ export interface PreviewUpdate {
   hidden?: string[];
   /** Per section key, the Liquid its declared settings bind to. */
   settingOverrides?: Record<string, Record<string, string>>;
+  /** Pending JSON template structure from sidebar reordering/additions. */
+  order?: string[];
+  added?: Record<string, { type: string }>;
 }
 
 /** Serves the theme from the bundle fetched once at start-up. */
@@ -158,6 +162,7 @@ async function start(): Promise<void> {
   let context = data.context;
   let hidden = new Set(data.hidden);
   let settingOverrides = data.settingOverrides ?? {};
+  let structure = data.structure ?? { order: [], added: {} };
   let painted = false;
 
   const render = async (update: PreviewUpdate = {}): Promise<void> => {
@@ -170,8 +175,10 @@ async function start(): Promise<void> {
     };
     if (update.hidden) hidden = new Set(update.hidden);
     if (update.settingOverrides) settingOverrides = update.settingOverrides;
+    if (update.order) structure = { ...structure, order: update.order };
+    if (update.added) structure = { ...structure, added: update.added };
     const html = await renderThemePreview(
-      runtime, context, data.template, hidden, settingOverrides,
+      runtime, context, data.template, hidden, settingOverrides, structure,
     );
 
     // Re-read the frame's document rather than trusting the one captured at

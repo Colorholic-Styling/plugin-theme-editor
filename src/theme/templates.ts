@@ -1,5 +1,6 @@
 import type { PluginEnv } from '../types';
 import type { ThemeDefinition } from '../themes';
+import type { TemplateOverrides } from './overrides';
 import type { ThemeStore } from './store';
 
 export interface ThemeTemplate {
@@ -52,6 +53,7 @@ export interface TemplateSection {
 export async function templateSections(
   template: ThemeTemplate,
   store: ThemeStore,
+  overrides?: Pick<TemplateOverrides, 'order' | 'added'>,
 ): Promise<TemplateSection[]> {
   if (template.format !== 'json') return [];
   let definition: unknown;
@@ -61,8 +63,14 @@ export async function templateSections(
     return [];
   }
   if (!isRecord(definition)) return [];
-  const sections = isRecord(definition.sections) ? definition.sections : {};
-  const order = Array.isArray(definition.order) ? definition.order : [];
+  const sections = {
+    ...(isRecord(definition.sections) ? definition.sections : {}),
+    ...(overrides?.added ?? {}),
+  };
+  const sourceOrder = Array.isArray(definition.order)
+    ? definition.order.filter((key): key is string => typeof key === 'string')
+    : [];
+  const order = mergeSectionOrder(sourceOrder, overrides?.order ?? [], Object.keys(sections));
 
   return order.flatMap((key): TemplateSection[] => {
     if (typeof key !== 'string') return [];
@@ -76,6 +84,47 @@ export async function templateSections(
       settings: isRecord(section.settings) ? section.settings : {},
     }];
   });
+}
+
+/** Section Liquid files available for insertion into a JSON template. */
+export async function availableSectionTypes(store: ThemeStore): Promise<Array<{ type: string; label: string }>> {
+  let manifest: unknown;
+  try {
+    manifest = JSON.parse(await store.read('/theme-manifest.json'));
+  } catch {
+    return [];
+  }
+  if (!isRecord(manifest) || !Array.isArray(manifest.files)) return [];
+
+  const types = new Set<string>();
+  for (const path of manifest.files) {
+    if (typeof path !== 'string') continue;
+    const match = /^\/sections\/([a-z0-9][a-z0-9-]*)\.liquid$/.exec(path);
+    if (match) types.add(match[1]);
+  }
+  return [...types].sort().map((type) => ({ type, label: humanize(type) }));
+}
+
+/**
+ * Keeps an explicitly arranged sequence while appending keys added later by a
+ * theme author. Removed definitions disappear, and duplicate keys never reach
+ * the renderer or the JSON template.
+ */
+export function mergeSectionOrder(
+  sourceOrder: string[],
+  arrangedOrder: string[],
+  availableKeys: string[],
+): string[] {
+  const available = new Set(availableKeys);
+  const seen = new Set<string>();
+  const merged: string[] = [];
+  const requested = arrangedOrder.length > 0 ? arrangedOrder : sourceOrder;
+  for (const key of [...requested, ...sourceOrder]) {
+    if (!available.has(key) || seen.has(key)) continue;
+    seen.add(key);
+    merged.push(key);
+  }
+  return merged;
 }
 
 /**

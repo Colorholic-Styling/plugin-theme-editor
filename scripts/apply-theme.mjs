@@ -59,6 +59,28 @@ function applyOverrides(template, overrides) {
   const next = structuredClone(template);
   const changes = [];
 
+  next.sections = next.sections && typeof next.sections === 'object' ? next.sections : {};
+  for (const [sectionKey, section] of Object.entries(overrides.added ?? {})) {
+    if (next.sections[sectionKey]) continue;
+    next.sections[sectionKey] = { type: section.type };
+    changes.push(`sections: added ${sectionKey} (${section.type})`);
+  }
+
+  if (Array.isArray(overrides.order) && overrides.order.length > 0) {
+    const available = new Set(Object.keys(next.sections));
+    const sourceOrder = Array.isArray(next.order) ? next.order.filter((key) => typeof key === 'string') : [];
+    const seen = new Set();
+    const arranged = [...overrides.order, ...sourceOrder].filter((key) => {
+      if (!available.has(key) || seen.has(key)) return false;
+      seen.add(key);
+      return true;
+    });
+    if (JSON.stringify(arranged) !== JSON.stringify(sourceOrder)) {
+      changes.push(`order: ${sourceOrder.join(', ')} → ${arranged.join(', ')}`);
+      next.order = arranged;
+    }
+  }
+
   const hidden = new Set(overrides.hidden ?? []);
   if (hidden.size && Array.isArray(next.order)) {
     const kept = next.order.filter((key) => !hidden.has(key));

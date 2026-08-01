@@ -1,1 +1,10 @@
-<section class="features">{{ section.settings.title | escape }}</section>
+<section class="features">
+  {% render '/snippets/section-head', settings: section.settings %}
+  {% for row in section.blocks %}
+  {% assign feature = row.settings | default: row %}
+  <article>
+    <h3>{{ feature.name | escape }}</h3>
+    <p>{{ feature.description | escape }}</p>
+  </article>
+  {% endfor %}
+</section>

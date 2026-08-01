@@ -37,15 +37,21 @@ import { deleteBucketTheme, isReservedThemeId, isWritable, R2ThemeStore } from '
 
 import {
   allTemplateOverrides,
+  addTemplateSection,
   clearTemplateOverrides,
   clearThemeOverrides,
-  hiddenSections,
   MissingOverrideStoreError,
+  setSectionOrder,
   setSectionHidden,
   setSectionSettings,
   templateOverrides,
 } from './theme/overrides';
-import { selectThemeTemplate, templateSections, themeTemplates } from './theme/templates';
+import {
+  availableSectionTypes,
+  selectThemeTemplate,
+  templateSections,
+  themeTemplates,
+} from './theme/templates';
 import {
   availableThemes,
   themeEditorHref,
@@ -90,6 +96,18 @@ export async function handleThemeEditorAdmin(
     if (!access.canEdit) return forbidden();
     if (request.method !== 'POST') return redirect(`${ADMIN_BASE}/editor`);
     return toggleSectionVisibility(request, env);
+  }
+
+  if (section === 'section-order') {
+    if (!access.canEdit) return forbidden();
+    if (request.method !== 'POST') return redirect(`${ADMIN_BASE}/editor`);
+    return reorderTemplateSections(request, env);
+  }
+
+  if (section === 'section-add') {
+    if (!access.canEdit) return forbidden();
+    if (request.method !== 'POST') return redirect(`${ADMIN_BASE}/editor`);
+    return addSectionToTemplate(request, env);
   }
 
   // The bindings panel for one section, as JSON. It is composed from the
@@ -272,12 +290,13 @@ async function editor(
     });
   }
   const language = selectedLanguage(url, meta.languages, meta.default_language);
-  const [sections, overrides, pendingOverrides] = await Promise.all([
-    templateSections(selectedTemplate, store),
-    templateOverrides(env, theme.id, selectedTemplate.id),
+  const overrides = await templateOverrides(env, theme.id, selectedTemplate.id);
+  const [sections, pendingOverrides, sectionTypes] = await Promise.all([
+    templateSections(selectedTemplate, store, overrides),
     // Across every template, not just the selected one: publishing folds in
     // all of them, so the button has to speak for all of them.
     allTemplateOverrides(env, theme.id, templates.map((entry) => entry.id)),
+    availableSectionTypes(store),
   ]);
   const pendingTemplateCount = Object.keys(pendingOverrides).length;
   const hidden = new Set(overrides.hidden);
@@ -376,6 +395,7 @@ async function editor(
     })),
     dashboardHref: ADMIN_BASE,
     canEdit: access.canEdit,
+    canEditStructure: access.canEdit && selectedTemplate.format === 'json',
     // Presence and field highlighting reuse the CMS's own editing session for
     // this page, so someone in the native editor and someone here see each
     // other. The endpoints are the host's, on the same origin as this page —
@@ -402,6 +422,10 @@ async function editor(
     })),
     hasPages: pages.length > 0,
     visibilityAction: `${ADMIN_BASE}/visibility`,
+    sectionOrderAction: `${ADMIN_BASE}/section-order`,
+    sectionAddAction: `${ADMIN_BASE}/section-add`,
+    sectionTypes,
+    hasSectionTypes: sectionTypes.length > 0,
     sections: sectionRows,
     hasSections: sectionRows.length > 0,
     orphanBlocks,
@@ -543,6 +567,7 @@ async function previewData(
     template: selectedTemplate,
     hidden: overrides.hidden,
     settingOverrides: overrides.settings,
+    structure: { order: overrides.order, added: overrides.added },
     runtime: themeRuntimeSettings(env, theme.id),
   }, { headers: { 'cache-control': 'no-store' } });
 }
@@ -578,7 +603,8 @@ async function sectionSchemaPanel(
   }
 
   const sectionKey = url.searchParams.get('section')?.trim() ?? '';
-  const sections = await templateSections(selectedTemplate, store);
+  const overrides = await templateOverrides(env, theme.id, selectedTemplate.id);
+  const sections = await templateSections(selectedTemplate, store, overrides);
   const activeSection = sections.find((entry) => entry.key === sectionKey) ?? null;
   if (sectionKey && !activeSection) {
     return Response.json({ ok: false, message: 'Theme section not found.' }, { status: 404 });
@@ -594,7 +620,6 @@ async function sectionSchemaPanel(
   const requestedBlock = positiveOrZeroInt(url.searchParams.get('block'));
   const selectedBlock = blockIndexOnPage(page, requestedBlock ?? activeSection?.blockIndex ?? null);
 
-  const overrides = await templateOverrides(env, theme.id, selectedTemplate.id);
   const selectedType = activeSection?.type ?? '';
   const schema = selectedType ? await sectionSchema(store, selectedType) : null;
   const fields = page ? editorFields(page, meta.languages, language, selectedBlock) : [];
@@ -637,7 +662,8 @@ async function toggleSectionVisibility(request: Request, env: PluginEnv): Promis
   // Only keys the template actually declares may be written, so a crafted post
   // cannot fill the override with junk the editor would then have to display.
   const sectionKey = formString(form.get('section'));
-  const sections = await templateSections(selectedTemplate, store);
+  const overrides = await templateOverrides(env, theme.id, selectedTemplate.id);
+  const sections = await templateSections(selectedTemplate, store, overrides);
   if (!sections.some((entry) => entry.key === sectionKey)) {
     return new Response('Theme section not found.', { status: 404 });
   }
@@ -671,6 +697,119 @@ async function toggleSectionVisibility(request: Request, env: PluginEnv): Promis
     + `&language=${encodeURIComponent(language)}`
     + `&flash=${encodeURIComponent(flash)}`;
   return redirect(href);
+}
+
+/** Persists the sidebar's drag/drop sequence as a pending JSON `order` edit. */
+async function reorderTemplateSections(request: Request, env: PluginEnv): Promise<Response> {
+  const form = await request.formData();
+  const theme = await themeFromId(env, formString(form.get('theme')) || null);
+  if (!theme) return Response.json({ ok: false, message: 'Theme not found.' }, { status: 404 });
+
+  const store = themeStore(env, theme);
+  const templates = await themeTemplates(env, theme, store);
+  const selectedTemplate = selectThemeTemplate(templates, formString(form.get('template')) || null);
+  if (!selectedTemplate || selectedTemplate.format !== 'json') {
+    return Response.json({ ok: false, message: 'JSON theme template not found.' }, { status: 404 });
+  }
+
+  const overrides = await templateOverrides(env, theme.id, selectedTemplate.id);
+  const sections = await templateSections(selectedTemplate, store, overrides);
+  let requested: unknown;
+  try {
+    requested = JSON.parse(formString(form.get('order')));
+  } catch {
+    requested = null;
+  }
+  const order = Array.isArray(requested)
+    ? requested.filter((key): key is string => typeof key === 'string')
+    : [];
+  const declared = sections.map((entry) => entry.key);
+  if (order.length !== declared.length
+    || new Set(order).size !== order.length
+    || order.some((key) => !declared.includes(key))) {
+    return Response.json({ ok: false, message: 'Section order does not match this template.' }, { status: 400 });
+  }
+
+  const sourceOrder = Object.keys(overrides.added).length === 0
+    ? (await templateSections(selectedTemplate, store)).map((entry) => entry.key)
+    : [];
+  const storedOrder = sourceOrder.length === order.length
+    && sourceOrder.every((key, index) => key === order[index])
+    ? []
+    : order;
+
+  try {
+    const next = await setSectionOrder(env, theme.id, selectedTemplate.id, storedOrder);
+    return Response.json({
+      ok: true,
+      order,
+      added: next.added,
+      message: 'Template section order updated.',
+    });
+  } catch (error) {
+    if (!(error instanceof MissingOverrideStoreError)) throw error;
+    return Response.json({ ok: false, message: error.message }, { status: 503 });
+  }
+}
+
+/** Adds one of the theme's `sections/*.liquid` files to the selected template. */
+async function addSectionToTemplate(request: Request, env: PluginEnv): Promise<Response> {
+  const form = await request.formData();
+  const theme = await themeFromId(env, formString(form.get('theme')) || null);
+  if (!theme) return new Response('Theme not found.', { status: 404 });
+
+  const store = themeStore(env, theme);
+  const templates = await themeTemplates(env, theme, store);
+  const selectedTemplate = selectThemeTemplate(templates, formString(form.get('template')) || null);
+  if (!selectedTemplate || selectedTemplate.format !== 'json') {
+    return new Response('JSON theme template not found.', { status: 404 });
+  }
+
+  const type = formString(form.get('type'));
+  const available = await availableSectionTypes(store);
+  if (!available.some((entry) => entry.type === type)) {
+    return new Response('Theme section type not found.', { status: 404 });
+  }
+
+  const overrides = await templateOverrides(env, theme.id, selectedTemplate.id);
+  const sections = await templateSections(selectedTemplate, store, overrides);
+  const definition = JSON.parse(await store.read(selectedTemplate.path)) as unknown;
+  const sourceSections = isRecord(definition) && isRecord(definition.sections)
+    ? definition.sections
+    : {};
+  const used = new Set([...Object.keys(sourceSections), ...Object.keys(overrides.added)]);
+  let key = type;
+  for (let suffix = 2; used.has(key); suffix += 1) key = `${type}-${suffix}`;
+
+  try {
+    const next = await addTemplateSection(
+      env,
+      theme.id,
+      selectedTemplate.id,
+      key,
+      type,
+      sections.map((entry) => entry.key),
+    );
+    if (acceptsJson(request)) {
+      return Response.json({ ok: true, key, type, order: next.order, added: next.added });
+    }
+  } catch (error) {
+    if (!(error instanceof MissingOverrideStoreError)) throw error;
+    if (acceptsJson(request)) {
+      return Response.json({ ok: false, message: error.message }, { status: 503 });
+    }
+    const fallback = `${themeEditorHref(theme, selectedTemplate.id)}`
+      + `&flash=${encodeURIComponent(error.message)}`;
+    return redirect(fallback);
+  }
+
+  const pageId = positiveInt(form.get('page_id'));
+  const language = formString(form.get('language')) || 'mis';
+  return redirect(`${themeEditorHref(theme, selectedTemplate.id)}`
+    + `${pageId ? `&page_id=${pageId}` : ''}`
+    + `&language=${encodeURIComponent(language)}`
+    + `&section=${encodeURIComponent(key)}&settings=schema`
+    + `&flash=${encodeURIComponent(`Added ${key}`)}`);
 }
 
 /**
@@ -1081,7 +1220,8 @@ async function saveTemplateSettings(request: Request, env: PluginEnv): Promise<R
   if (!selectedTemplate) return new Response('Theme template not found.', { status: 404 });
 
   const sectionKey = formString(form.get('section'));
-  const sections = await templateSections(selectedTemplate, store);
+  const overrides = await templateOverrides(env, theme.id, selectedTemplate.id);
+  const sections = await templateSections(selectedTemplate, store, overrides);
   const target = sections.find((entry) => entry.key === sectionKey);
   if (!target) return new Response('Theme section not found.', { status: 404 });
 
