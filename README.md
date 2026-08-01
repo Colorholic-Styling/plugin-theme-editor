@@ -630,7 +630,11 @@ drains on its own and can then be unbound.
 The toggle posts to `/admin/plugins/theme-editor/visibility`; drag/drop posts
 the complete validated sequence to `/admin/plugins/theme-editor/section-order`;
 and the Add tool posts a section type discovered from `sections/*.liquid` to
-`/admin/plugins/theme-editor/section-add`. All need
+`/admin/plugins/theme-editor/section-add`. Each section row also has a
+confirmed Delete action that posts to
+`/admin/plugins/theme-editor/section-delete`. A deleted section disappears
+from the pending preview immediately; publishing removes both its definition
+from `sections` and its key from `order`. All need
 `theme-editor:write`. When the frame can be redrawn in the page, the editor
 sends that post itself, updates the row, and hands the returned hidden set to
 the renderer — no page navigation and no frame reload. `setSectionHidden`

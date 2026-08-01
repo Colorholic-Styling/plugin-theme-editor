@@ -126,7 +126,9 @@ export async function renderThemePreview(
   template: ThemeTemplate,
   hidden: ReadonlySet<string> = new Set(),
   settingOverrides: Readonly<Record<string, Record<string, string>>> = {},
-  structure: Readonly<Pick<TemplateOverrides, 'order' | 'added'>> = { order: [], added: {} },
+  structure: Readonly<Pick<TemplateOverrides, 'order' | 'added' | 'deleted'>> = {
+    order: [], added: {}, deleted: [],
+  },
 ): Promise<string> {
   const store = runtime.store;
   const renderData = previewRenderData(runtime, context);
@@ -218,7 +220,7 @@ async function previewTemplateSource(
   context: ThemeRenderContext,
   hidden: ReadonlySet<string>,
   settingOverrides: Readonly<Record<string, Record<string, string>>>,
-  structure: Readonly<Pick<TemplateOverrides, 'order' | 'added'>>,
+  structure: Readonly<Pick<TemplateOverrides, 'order' | 'added' | 'deleted'>>,
 ): Promise<{ source: string; sections: Record<string, unknown>; files: Record<string, string> }> {
   const source = await store.read(template.path);
   if (template.format === 'liquid') return { source, sections: {}, files: {} };
@@ -226,10 +228,11 @@ async function previewTemplateSource(
   const definition = JSON.parse(source) as unknown;
   if (!isRecord(definition)) throw new Error(`Invalid theme template: ${template.id}`);
   const layout = safeTemplateToken(definition.layout) || 'default';
-  const sections = {
+  const sections: Record<string, unknown> = {
     ...(isRecord(definition.sections) ? definition.sections : {}),
     ...(structure.added ?? {}),
   };
+  for (const key of structure.deleted ?? []) delete sections[key];
   // Hiding a section drops it from the order the preview compiles, leaving the
   // theme's own template file untouched.
   const sourceOrder = Array.isArray(definition.order)

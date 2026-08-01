@@ -31,6 +31,8 @@ export interface TemplateOverrides {
   order: string[];
   /** Sections created in the editor before they are published into the template. */
   added: Record<string, { type: string }>;
+  /** Source section definitions removed in the editor before publishing. */
+  deleted: string[];
 }
 
 /** Every template's overrides for one theme — what a single state key holds. */
@@ -108,6 +110,7 @@ async function writeTheme(env: PluginEnv, themeId: string, value: ThemeOverrides
       settings: entry.settings,
       ...(entry.order.length > 0 ? { order: entry.order } : {}),
       ...(Object.keys(entry.added).length > 0 ? { added: entry.added } : {}),
+      ...(entry.deleted.length > 0 ? { deleted: entry.deleted } : {}),
     }]));
   try {
     // An empty record is the absence of overrides, not an override to nothing —
@@ -312,6 +315,48 @@ export async function addTemplateSection(
   return next;
 }
 
+/**
+ * Removes a section from the pending template. Source sections are recorded
+ * for deletion at publish time; an unpublished addition can simply disappear.
+ */
+export async function deleteTemplateSection(
+  env: PluginEnv,
+  themeId: string,
+  templateId: string,
+  key: string,
+  sourceOrder: string[],
+): Promise<TemplateOverrides> {
+  const record = await adoptLegacy(env, themeId, await readTheme(env, themeId), [templateId]);
+  const current = record[templateId] ?? emptyOverrides();
+  const added = { ...current.added };
+  const wasAdded = Object.hasOwn(added, key);
+  delete added[key];
+
+  const deleted = new Set(current.deleted);
+  if (wasAdded) deleted.delete(key);
+  else deleted.add(key);
+
+  const settings = { ...current.settings };
+  delete settings[key];
+  let order = current.order.filter((entry) => entry !== key);
+  const baseline = sourceOrder.filter((entry) => !deleted.has(entry));
+  if (Object.keys(added).length === 0
+    && order.length === baseline.length
+    && order.every((entry, index) => entry === baseline[index])) {
+    order = [];
+  }
+
+  const next: TemplateOverrides = {
+    hidden: current.hidden.filter((entry) => entry !== key),
+    settings,
+    order,
+    added,
+    deleted: [...deleted].sort(),
+  };
+  await writeTheme(env, themeId, withTemplate(record, templateId, next));
+  return next;
+}
+
 /** Sets a template's entry, or removes it once it says nothing. */
 function withTemplate(
   record: ThemeOverrides,
@@ -374,18 +419,23 @@ function parseOverrides(stored: string | Record<string, unknown> | null): Templa
       ? parsed.order.filter((key): key is string => typeof key === 'string')
       : [],
     added,
+    deleted: Array.isArray(parsed.deleted)
+      ? [...new Set(parsed.deleted.filter((key): key is string =>
+        typeof key === 'string' && /^[a-z0-9][a-z0-9-]*$/.test(key)))].sort()
+      : [],
   };
 }
 
 function emptyOverrides(): TemplateOverrides {
-  return { hidden: [], settings: {}, order: [], added: {} };
+  return { hidden: [], settings: {}, order: [], added: {}, deleted: [] };
 }
 
 function hasTemplateOverrides(value: TemplateOverrides): boolean {
   return value.hidden.length > 0
     || Object.keys(value.settings).length > 0
     || value.order.length > 0
-    || Object.keys(value.added).length > 0;
+    || Object.keys(value.added).length > 0
+    || value.deleted.length > 0;
 }
 
 function isRecord(value: unknown): value is Record<string, unknown> {

@@ -236,6 +236,24 @@
                                   class="inline-flex h-10 shrink-0 items-center justify-center rounded-lg border border-gray-300 bg-white px-3 text-sm font-semibold text-gray-700 hover:bg-gray-50">{%- if section.hidden -%}Show{%- else -%}Hide{%- endif -%}</button>
                         </form>
                       {% endif %}
+                      {% if canEditStructure %}
+                        <form method="post" action="{{ sectionDeleteAction }}" class="shrink-0"
+                              data-confirm="Delete the {{ section.label }} section? It will be removed from the template when changes are published.">
+                          <input type="hidden" name="theme" value="{{ themeId }}">
+                          <input type="hidden" name="template" value="{{ templateId }}">
+                          <input type="hidden" name="section" value="{{ section.key }}">
+                          <input type="hidden" name="page_id" value="{{ selectedPage.id }}">
+                          <input type="hidden" name="language" value="{{ language }}">
+                          <button type="submit"
+                                  title="Delete the {{ section.label }} section"
+                                  aria-label="Delete the {{ section.label }} section"
+                                  class="inline-flex h-10 w-10 shrink-0 items-center justify-center rounded-lg border border-red-200 bg-white text-red-600 hover:bg-red-50 hover:text-red-700">
+                            <svg class="h-4 w-4" viewBox="0 0 20 20" fill="currentColor" aria-hidden="true">
+                              <path fill-rule="evenodd" d="M8.5 3a1.5 1.5 0 0 0-1.415 1H4.75a.75.75 0 0 0 0 1.5h.545l.717 10.04A1.5 1.5 0 0 0 7.508 17h4.984a1.5 1.5 0 0 0 1.496-1.46l.717-10.04h.545a.75.75 0 0 0 0-1.5h-2.335A1.5 1.5 0 0 0 11.5 3h-3Zm.085 1a.5.5 0 0 1 .415-.22h2a.5.5 0 0 1 .415.22h-2.83Zm-.833 3.25a.75.75 0 0 1 .748.697l.4 5.5a.75.75 0 1 1-1.496.106l-.4-5.5a.75.75 0 0 1 .748-.803Zm4.496 0a.75.75 0 0 1 .748.803l-.4 5.5a.75.75 0 1 1-1.496-.106l.4-5.5a.75.75 0 0 1 .748-.697Z" clip-rule="evenodd"></path>
+                            </svg>
+                          </button>
+                        </form>
+                      {% endif %}
                     </div>
                   {% endfor %}
                   </div>

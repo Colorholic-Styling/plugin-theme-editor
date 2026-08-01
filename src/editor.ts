@@ -40,6 +40,7 @@ import {
   addTemplateSection,
   clearTemplateOverrides,
   clearThemeOverrides,
+  deleteTemplateSection,
   MissingOverrideStoreError,
   setSectionOrder,
   setSectionHidden,
@@ -108,6 +109,12 @@ export async function handleThemeEditorAdmin(
     if (!access.canEdit) return forbidden();
     if (request.method !== 'POST') return redirect(`${ADMIN_BASE}/editor`);
     return addSectionToTemplate(request, env);
+  }
+
+  if (section === 'section-delete') {
+    if (!access.canEdit) return forbidden();
+    if (request.method !== 'POST') return redirect(`${ADMIN_BASE}/editor`);
+    return deleteSectionFromTemplate(request, env);
   }
 
   // The bindings panel for one section, as JSON. It is composed from the
@@ -424,6 +431,7 @@ async function editor(
     visibilityAction: `${ADMIN_BASE}/visibility`,
     sectionOrderAction: `${ADMIN_BASE}/section-order`,
     sectionAddAction: `${ADMIN_BASE}/section-add`,
+    sectionDeleteAction: `${ADMIN_BASE}/section-delete`,
     sectionTypes,
     hasSectionTypes: sectionTypes.length > 0,
     sections: sectionRows,
@@ -567,7 +575,7 @@ async function previewData(
     template: selectedTemplate,
     hidden: overrides.hidden,
     settingOverrides: overrides.settings,
-    structure: { order: overrides.order, added: overrides.added },
+    structure: { order: overrides.order, added: overrides.added, deleted: overrides.deleted },
     runtime: themeRuntimeSettings(env, theme.id),
   }, { headers: { 'cache-control': 'no-store' } });
 }
@@ -810,6 +818,62 @@ async function addSectionToTemplate(request: Request, env: PluginEnv): Promise<R
     + `&language=${encodeURIComponent(language)}`
     + `&section=${encodeURIComponent(key)}&settings=schema`
     + `&flash=${encodeURIComponent(`Added ${key}`)}`);
+}
+
+/** Removes a section from the pending JSON template and its rendered order. */
+async function deleteSectionFromTemplate(request: Request, env: PluginEnv): Promise<Response> {
+  const form = await request.formData();
+  const theme = await themeFromId(env, formString(form.get('theme')) || null);
+  if (!theme) return new Response('Theme not found.', { status: 404 });
+
+  const store = themeStore(env, theme);
+  const templates = await themeTemplates(env, theme, store);
+  const selectedTemplate = selectThemeTemplate(templates, formString(form.get('template')) || null);
+  if (!selectedTemplate || selectedTemplate.format !== 'json') {
+    return new Response('JSON theme template not found.', { status: 404 });
+  }
+
+  const sectionKey = formString(form.get('section'));
+  const overrides = await templateOverrides(env, theme.id, selectedTemplate.id);
+  const sections = await templateSections(selectedTemplate, store, overrides);
+  if (!sections.some((entry) => entry.key === sectionKey)) {
+    return new Response('Theme section not found.', { status: 404 });
+  }
+
+  const definition = JSON.parse(await store.read(selectedTemplate.path)) as unknown;
+  const sourceOrder = isRecord(definition) && Array.isArray(definition.order)
+    ? definition.order.filter((key): key is string => typeof key === 'string')
+    : [];
+
+  try {
+    const next = await deleteTemplateSection(
+      env, theme.id, selectedTemplate.id, sectionKey, sourceOrder,
+    );
+    if (acceptsJson(request)) {
+      return Response.json({
+        ok: true,
+        key: sectionKey,
+        order: next.order,
+        added: next.added,
+        deleted: next.deleted,
+      });
+    }
+  } catch (error) {
+    if (!(error instanceof MissingOverrideStoreError)) throw error;
+    if (acceptsJson(request)) {
+      return Response.json({ ok: false, message: error.message }, { status: 503 });
+    }
+    const fallback = `${themeEditorHref(theme, selectedTemplate.id)}`
+      + `&flash=${encodeURIComponent(error.message)}`;
+    return redirect(fallback);
+  }
+
+  const pageId = positiveInt(form.get('page_id'));
+  const language = formString(form.get('language')) || 'mis';
+  return redirect(`${themeEditorHref(theme, selectedTemplate.id)}`
+    + `${pageId ? `&page_id=${pageId}` : ''}`
+    + `&language=${encodeURIComponent(language)}`
+    + `&flash=${encodeURIComponent(`Deleted ${sectionKey}`)}`);
 }
 
 /**

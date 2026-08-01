@@ -76,7 +76,11 @@ async function renderPreview(
     hidden?: string[];
     news?: CmsPage[];
     settingOverrides?: Record<string, Record<string, string>>;
-    structure?: { order: string[]; added: Record<string, { type: string }> };
+    structure?: {
+      order: string[];
+      added: Record<string, { type: string }>;
+      deleted: string[];
+    };
   } = {},
 ): Promise<string> {
   const pluginEnv = env();
@@ -97,7 +101,7 @@ async function renderPreview(
     editorHref: `/admin/plugins/theme-editor/editor?theme=example-theme&template=${template.id}&page_id=${fixture.id}&language=en`,
     selectedBlock: options.selectedBlock === undefined ? 0 : options.selectedBlock,
   }, template, new Set(options.hidden ?? []), options.settingOverrides ?? {},
-  options.structure ?? { order: [], added: {} });
+  options.structure ?? { order: [], added: {}, deleted: [] });
 }
 
 /** In-memory stand-in for the THEME_OVERRIDES namespace. */
@@ -964,6 +968,7 @@ describe('theme editor routes', () => {
           settings: { hero: { title: '{{ page.blocks[0].eyebrow }}' } },
           order: [],
           added: {},
+          deleted: [],
         },
       },
     });
@@ -1184,6 +1189,8 @@ describe('theme editor routes', () => {
     const html = await renderEditorSection(data);
     expect(html).toContain('Template sections');
     expect(html).toContain('action="/admin/plugins/theme-editor/section-add"');
+    expect(html).toContain('action="/admin/plugins/theme-editor/section-delete"');
+    expect(html).toContain('aria-label="Delete the Cta section"');
     expect(html).toContain('data-theme-editor-drag-handle');
     expect(html).toContain('data-section="cta"');
     expect(html).toContain('name="section" value="contact"');
@@ -1250,6 +1257,72 @@ describe('theme editor routes', () => {
     const stored = JSON.parse(state.store.get(themeOverridesKey('example-theme')) as string);
     expect(stored.page.added).toEqual({ 'hero-2': { type: 'hero' } });
     expect(stored.page.order.at(-1)).toBe('hero-2');
+  });
+
+  it('deletes a section from the pending template, preview, and published JSON structure', async () => {
+    const fixture = page();
+    mockCms(({ url }) => {
+      if (url.pathname === '/__cms/content-meta') return contentMeta();
+      if (url.pathname === '/__cms/pages') {
+        return { pages: url.searchParams.get('page_type') === 'home' ? [fixture] : [], total: 1 };
+      }
+      if (url.pathname === '/__cms/pages/12') return { page: fixture };
+      throw new Error(`Unexpected call ${url}`);
+    });
+
+    const response = await plugin.fetch(
+      adminRequest('/__plugin/admin/section-delete', {
+        method: 'POST',
+        headers: { 'content-type': 'application/x-www-form-urlencoded', accept: 'application/json' },
+        body: new URLSearchParams({ theme: 'example-theme', template: 'page', section: 'cta' }),
+      }),
+      env(),
+    );
+    expect(response.status).toBe(200);
+    expect(await response.json()).toMatchObject({ ok: true, key: 'cta', deleted: ['cta'] });
+    expect(JSON.parse(state.store.get(themeOverridesKey('example-theme')) as string))
+      .toEqual({ page: { hidden: [], settings: {}, deleted: ['cta'] } });
+
+    const editor = await plugin.fetch(
+      adminRequest('/__plugin/admin/editor?theme=example-theme&template=page&page_id=12&language=en'),
+      env(),
+    );
+    const editorData = await editor.json() as { sections: Array<{ key: string }> };
+    expect(editorData.sections.some((entry) => entry.key === 'cta')).toBe(false);
+
+    const preview = await plugin.fetch(
+      adminRequest('/__plugin/admin/preview/data?theme=example-theme&template=page&page_id=12&language=en'),
+      env(),
+    );
+    expect((await preview.json() as { structure: { deleted: string[] } }).structure.deleted)
+      .toEqual(['cta']);
+  });
+
+  it('forgets an unpublished section entirely when it is deleted', async () => {
+    mockCms(({ url }) => {
+      if (url.pathname === '/__cms/content-meta') return contentMeta();
+      throw new Error(`Unexpected call ${url}`);
+    });
+
+    await plugin.fetch(
+      adminRequest('/__plugin/admin/section-add', {
+        method: 'POST',
+        headers: { 'content-type': 'application/x-www-form-urlencoded', accept: 'application/json' },
+        body: new URLSearchParams({ theme: 'example-theme', template: 'page', type: 'hero' }),
+      }),
+      env(),
+    );
+    const response = await plugin.fetch(
+      adminRequest('/__plugin/admin/section-delete', {
+        method: 'POST',
+        headers: { 'content-type': 'application/x-www-form-urlencoded', accept: 'application/json' },
+        body: new URLSearchParams({ theme: 'example-theme', template: 'page', section: 'hero-2' }),
+      }),
+      env(),
+    );
+    expect(response.status).toBe(200);
+    expect(await response.json()).toMatchObject({ ok: true, key: 'hero-2', added: {}, deleted: [] });
+    expect(state.store.has(themeOverridesKey('example-theme'))).toBe(false);
   });
 
   it('opens a section the page has no block for on Schema, with no Values mode', async () => {
@@ -1449,6 +1522,7 @@ describe('theme editor routes', () => {
       structure: {
         order: ['cta', 'hero', 'faq-2'],
         added: { 'faq-2': { type: 'faq' } },
+        deleted: [],
       },
     });
     expect(html.indexOf('class="cta')).toBeLessThan(html.indexOf('class="hero'));

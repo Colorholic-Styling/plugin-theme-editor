@@ -51,9 +51,8 @@ async function pluginFetch(secret, path, init = {}) {
 
 /**
  * Applies one template's overrides to the theme's own JSON: hidden sections
- * leave `order`, and changed bindings replace what the section declares.
- * The section definitions themselves are kept, so showing one again is a
- * matter of putting its key back rather than rebuilding it.
+ * leave `order`, deleted sections leave both `sections` and `order`, and
+ * changed bindings replace what the section declares.
  */
 function applyOverrides(template, overrides) {
   const next = structuredClone(template);
@@ -64,6 +63,14 @@ function applyOverrides(template, overrides) {
     if (next.sections[sectionKey]) continue;
     next.sections[sectionKey] = { type: section.type };
     changes.push(`sections: added ${sectionKey} (${section.type})`);
+  }
+  const deleted = new Set(overrides.deleted ?? []);
+  for (const sectionKey of deleted) {
+    const section = next.sections[sectionKey];
+    if (!section || typeof section !== 'object') continue;
+    const type = typeof section.type === 'string' ? section.type : 'section';
+    delete next.sections[sectionKey];
+    changes.push(`sections: removed ${sectionKey} (${type})`);
   }
 
   if (Array.isArray(overrides.order) && overrides.order.length > 0) {
@@ -78,6 +85,14 @@ function applyOverrides(template, overrides) {
     if (JSON.stringify(arranged) !== JSON.stringify(sourceOrder)) {
       changes.push(`order: ${sourceOrder.join(', ')} → ${arranged.join(', ')}`);
       next.order = arranged;
+    }
+  }
+
+  if (deleted.size && Array.isArray(next.order)) {
+    const kept = next.order.filter((key) => !deleted.has(key));
+    if (kept.length !== next.order.length) {
+      changes.push(`order: removed ${[...deleted].join(', ')}`);
+      next.order = kept;
     }
   }
 

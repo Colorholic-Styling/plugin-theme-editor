@@ -139,6 +139,25 @@ describe('theme:apply', () => {
     }
   });
 
+  it('removes deleted section definitions and their order entries', async () => {
+    const source = await themeDir();
+    const server = await pluginServer({
+      page: { hidden: [], settings: {}, deleted: ['cta'] },
+    });
+
+    try {
+      const { stdout } = await apply(source, server.url);
+      expect(stdout).toContain('sections: removed cta (cta)');
+      expect(stdout).toContain('order: removed cta');
+      const written = JSON.parse(await readFile(join(source, 'templates', 'page.json'), 'utf8'));
+      expect(written.sections.cta).toBeUndefined();
+      expect(written.order).toEqual(['hero']);
+      expect(server.cleared).toEqual(['page']);
+    } finally {
+      server.close();
+    }
+  });
+
   it('leaves the theme alone when nothing is overridden', async () => {
     const source = await themeDir();
     const server = await pluginServer({});

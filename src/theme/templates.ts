@@ -53,7 +53,7 @@ export interface TemplateSection {
 export async function templateSections(
   template: ThemeTemplate,
   store: ThemeStore,
-  overrides?: Pick<TemplateOverrides, 'order' | 'added'>,
+  overrides?: Pick<TemplateOverrides, 'order' | 'added' | 'deleted'>,
 ): Promise<TemplateSection[]> {
   if (template.format !== 'json') return [];
   let definition: unknown;
@@ -63,10 +63,11 @@ export async function templateSections(
     return [];
   }
   if (!isRecord(definition)) return [];
-  const sections = {
+  const sections: Record<string, unknown> = {
     ...(isRecord(definition.sections) ? definition.sections : {}),
     ...(overrides?.added ?? {}),
   };
+  for (const key of overrides?.deleted ?? []) delete sections[key];
   const sourceOrder = Array.isArray(definition.order)
     ? definition.order.filter((key): key is string => typeof key === 'string')
     : [];

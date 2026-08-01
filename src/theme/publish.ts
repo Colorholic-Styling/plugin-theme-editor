@@ -19,6 +19,14 @@ export function applyOverridesToTemplate(
     sections[sectionKey] = { type: section.type };
     changes.push(`sections: added ${sectionKey} (${section.type})`);
   }
+  const deleted = new Set(overrides.deleted ?? []);
+  for (const sectionKey of deleted) {
+    const section = sections[sectionKey];
+    if (!isRecord(section)) continue;
+    const type = typeof section.type === 'string' ? section.type : 'section';
+    delete sections[sectionKey];
+    changes.push(`sections: removed ${sectionKey} (${type})`);
+  }
   next.sections = sections;
 
   if ((overrides.order ?? []).length > 0) {
@@ -29,6 +37,14 @@ export function applyOverridesToTemplate(
     if (JSON.stringify(arranged) !== JSON.stringify(sourceOrder)) {
       changes.push(`order: ${sourceOrder.join(', ')} → ${arranged.join(', ')}`);
       next.order = arranged;
+    }
+  }
+
+  if (deleted.size && Array.isArray(next.order)) {
+    const kept = next.order.filter((key) => typeof key !== 'string' || !deleted.has(key));
+    if (kept.length !== next.order.length) {
+      changes.push(`order: removed ${[...deleted].join(', ')}`);
+      next.order = kept;
     }
   }
 

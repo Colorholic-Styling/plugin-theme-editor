@@ -36,6 +36,7 @@ function viewData(overrides: Record<string, unknown> = {}) {
     visibilityAction: '/admin/plugins/theme-editor/visibility',
     sectionOrderAction: '/admin/plugins/theme-editor/section-order',
     sectionAddAction: '/admin/plugins/theme-editor/section-add',
+    sectionDeleteAction: '/admin/plugins/theme-editor/section-delete',
     sectionTypes: [{ type: 'hero', label: 'Hero' }],
     hasSectionTypes: true,
     looseSections: [],
