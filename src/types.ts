@@ -53,4 +53,8 @@ export interface ThemeRenderContext {
   defaultLanguage: string;
   editorHref: string;
   selectedBlock: number | null;
+  /** UI copy supplied by the admin page for the preview's editor overlays. */
+  editorCopy?: {
+    editBlock: string;
+  };
 }

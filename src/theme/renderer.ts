@@ -43,8 +43,8 @@ function overlayWrapped(variable: string, inner: string, guarded: boolean): stri
   <a class="theme-editor-select"
      target="_top"
      href="{{ ${variable}.editorHref | escape }}"
-     aria-label="Edit {{ ${variable}.type | escape }} block">
-    <span>Edit {{ ${variable}.type | escape }}</span>
+     aria-label="{{ themeEditorCopy.editBlock | replace: '{type}', ${variable}.type | escape }}">
+    <span>{{ themeEditorCopy.editBlock | replace: '{type}', ${variable}.type | escape }}</span>
   </a>`;
   return guarded
     ? `{% if ${variable} %}${open}{% endif %}\n${inner}\n{% if ${variable} %}</div>{% endif %}`
@@ -210,6 +210,9 @@ function previewRenderData(
       || localized(context.page.lect, 'body', chain),
     blocks: sections,
     sections,
+    themeEditorCopy: {
+      editBlock: context.editorCopy?.editBlock ?? 'Edit {type} block',
+    },
   };
 }
 

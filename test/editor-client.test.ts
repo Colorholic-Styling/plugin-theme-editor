@@ -3,7 +3,7 @@
 import { readFile } from 'node:fs/promises';
 import { resolve } from 'node:path';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
-import { hostLiquid } from './host-liquid';
+import { testLiquid } from './host-liquid';
 
 /**
  * Drives the approved editor asset against the real `editor.liquid` markup, so
@@ -139,7 +139,7 @@ async function mountEditor(
 ): Promise<{ renders: RenderCall[]; fetchMock: ReturnType<typeof vi.fn>; sockets: FakeSocket[] }> {
   const source = await readFile(editorSection, 'utf8');
   document.body.innerHTML = String(
-    await new (hostLiquid().Liquid)({ outputEscape: 'escape' }).parseAndRender(source, viewData(overrides)),
+    await testLiquid({ outputEscape: 'escape' }).parseAndRender(source, viewData(overrides)),
   );
 
   const renders: RenderCall[] = [];

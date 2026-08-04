@@ -13,8 +13,12 @@ export interface ThemeDefinition {
   id: string;
   name: string;
   description: string;
+  /** Translation key for a built-in description; theme-authored text stays as-is. */
+  descriptionKey?: string;
   source: string;
   status: string;
+  /** Translation key for a built-in storage/status label. */
+  statusKey?: string;
   /** Path prefix inside the asset bundle; unused by bucket-backed themes. */
   assetPrefix: string;
   /** Where the theme's files live, and whether the Worker may write them. */
@@ -42,10 +46,14 @@ export async function availableThemes(env: PluginEnv): Promise<ThemeDefinition[]
       id,
       name: meta.name || humanize(id),
       description: meta.description || 'A theme stored in the theme bucket.',
+      descriptionKey: meta.description ? undefined : 'plugins.theme-editor.themes.description_bucket',
       source: meta.repo
         ? `${meta.repo.owner}/${meta.repo.repo}@${meta.repo.branch}`
         : `Bucket ${id}/`,
       status: meta.repo ? 'GitHub' : 'Bucket',
+      statusKey: meta.repo
+        ? 'plugins.theme-editor.themes.status_github'
+        : 'plugins.theme-editor.themes.status_bucket',
       assetPrefix: '',
       storage: 'bucket' as const,
       repo: meta.repo,
@@ -100,8 +108,10 @@ function developmentTheme(env: PluginEnv): ThemeDefinition {
     id: env.THEME_ID || 'development',
     name: env.THEME_NAME || 'Development Theme',
     description: 'The local development theme staged under .dist/views/theme.',
+    descriptionKey: 'plugins.theme-editor.themes.description_development',
     source: 'Local .dist/views/theme',
     status: 'Development',
+    statusKey: 'plugins.theme-editor.themes.status_development',
     assetPrefix: '/theme',
     storage: 'asset',
     repo: null,

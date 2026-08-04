@@ -4,6 +4,58 @@
   var root = document.querySelector('[data-theme-editor]');
   if (!root) return;
 
+  function copyValue(name, fallback) {
+    var value = root.getAttribute('data-theme-editor-copy-' + name);
+    return value === null || value === '' ? fallback : value;
+  }
+
+  function formatCopy(template, values) {
+    return String(template || '').replace(/\{([a-zA-Z0-9_]+)\}/g, function (_match, key) {
+      return values && values[key] !== undefined ? String(values[key]) : _match;
+    });
+  }
+
+  var copy = {
+    discardUnsaved: copyValue('discard-unsaved', 'Discard unsaved changes in this selection?'),
+    editContent: copyValue('edit-content', 'Edit content'),
+    saving: copyValue('saving', 'Saving…'),
+    changesFailed: copyValue('changes-failed', 'Changes could not be saved.'),
+    changesSaved: copyValue('changes-saved', 'Changes saved'),
+    saveChanges: copyValue('save-changes', 'Save changes'),
+    schemaNoSettings: copyValue('schema-no-settings', 'This section has no schema settings.'),
+    schemaNoBinding: copyValue('schema-no-binding', 'No template section binds this block, so there is nothing to save these to.'),
+    empty: copyValue('empty', 'Empty'),
+    noStoredValue: copyValue('no-stored-value', 'No stored value backs this setting yet.'),
+    savingOrder: copyValue('saving-order', 'Saving order…'),
+    orderSaved: copyValue('order-saved', 'Order saved'),
+    orderFailed: copyValue('order-failed', 'Could not save order'),
+    bindingFailed: copyValue('binding-failed', 'Could not resolve this binding.'),
+    show: copyValue('show', 'Show'),
+    hide: copyValue('hide', 'Hide'),
+    visibilityTitle: copyValue('visibility-title', '{action} the {section} section in every page using this template'),
+    noScalarValues: copyValue('no-scalar-values', 'This selection has no scalar values to edit yet.'),
+    pageSettings: copyValue('page-settings', 'Page settings'),
+    block: copyValue('block', 'Block {number}'),
+    pageValues: copyValue('page-values', 'Page values'),
+    blockSettings: copyValue('block-settings', 'Block settings'),
+    itemGroup: copyValue('item-group', '{key} · item {number}'),
+    pagePointers: copyValue('page-pointers', 'Page pointers'),
+    system: copyValue('system', 'system'),
+    pointer: copyValue('pointer', 'pointer'),
+    attribute: copyValue('attribute', 'attribute'),
+    valueFallback: copyValue('value-fallback', 'Value'),
+    someoneElse: copyValue('someone-else', 'Someone else'),
+    editingThis: copyValue('editing-this', '{names} is editing this'),
+    idle: copyValue('idle', ' (idle)'),
+    you: copyValue('you', ' (you)')
+  };
+
+  function localizeServerMessage(message) {
+    if (message === 'Changes saved') return copy.changesSaved;
+    if (message === 'Changes could not be saved.') return copy.changesFailed;
+    return message;
+  }
+
   var editorAction = root.getAttribute('data-editor-action');
   var stateSource = root.querySelector('[data-theme-editor-state]');
   var form = root.querySelector('[data-theme-editor-form]');
@@ -187,7 +239,7 @@
     loadForm.addEventListener('change', function (event) {
       var select = event.target;
       if (!select || select.tagName !== 'SELECT' || !loadForm.contains(select)) return;
-      if (dirty && !window.confirm('Discard unsaved changes in this selection?')) {
+      if (dirty && !window.confirm(copy.discardUnsaved)) {
         // Leaving the new choice showing would describe a page that was never
         // loaded, so put the selector back to what is on screen.
         select.value = select.getAttribute('data-loaded-value') || select.value;
@@ -506,7 +558,7 @@
       }
       element.setAttribute('contenteditable', 'plaintext-only');
       element.setAttribute('role', 'textbox');
-      element.setAttribute('aria-label', 'Edit content');
+      element.setAttribute('aria-label', copy.editContent);
       element.setAttribute('spellcheck', 'true');
     });
   }
@@ -649,7 +701,7 @@
     if (saving || !saveButton || !saveStatus) return;
     saving = true;
     saveButton.disabled = true;
-    saveButton.textContent = 'Saving…';
+    saveButton.textContent = copy.saving;
     form.setAttribute('aria-busy', 'true');
     clearSaveStatus();
 
@@ -668,7 +720,7 @@
         throw new Error(
           isRecord(payload) && typeof payload.message === 'string'
             ? payload.message
-            : 'Changes could not be saved.'
+            : copy.changesFailed
         );
       }
 
@@ -681,21 +733,21 @@
       }
       dirty = false;
       showSaveStatus(
-        typeof payload.message === 'string' ? payload.message : 'Changes saved',
+        typeof payload.message === 'string' ? localizeServerMessage(payload.message) : copy.changesSaved,
         false
       );
       refreshPreview();
     } catch (error) {
       showSaveStatus(
         error instanceof Error && error.message
-          ? error.message
-          : 'Changes could not be saved.',
+          ? localizeServerMessage(error.message)
+          : copy.changesFailed,
         true
       );
     } finally {
       saving = false;
       saveButton.disabled = false;
-      saveButton.textContent = 'Save changes';
+      saveButton.textContent = copy.saveChanges;
       form.removeAttribute('aria-busy');
       syncPanelHeight();
     }
@@ -709,7 +761,7 @@
       ok: false,
       message: message && message.charAt(0) !== '<'
         ? message.slice(0, 240)
-        : 'Changes could not be saved.'
+        : copy.changesFailed
     };
   }
 
@@ -835,13 +887,13 @@
       panel.appendChild(element(
         'p',
         'rounded-lg bg-gray-50 px-3 py-4 text-sm text-gray-500',
-        'This section declares no {% schema %} settings.'
+        copy.schemaNoSettings
       ));
     } else if (!stringValue(payload.section)) {
       panel.appendChild(element(
         'p',
         'mt-3 rounded-lg bg-amber-50 px-3 py-3 text-sm text-amber-700',
-        'No template section binds this block, so there is nothing to save these to.'
+        copy.schemaNoBinding
       ));
     }
 
@@ -895,7 +947,7 @@
     var context = element('span', 'mt-1 block truncate text-xs text-gray-400');
     context.setAttribute('data-theme-editor-setting-value', '');
     context.textContent = stringValue(setting.value)
-      || (setting.editable ? 'Empty' : 'No stored value backs this setting yet.');
+      || (setting.editable ? copy.empty : copy.noStoredValue);
     label.appendChild(context);
     return label;
   }
@@ -975,9 +1027,9 @@
 
     if (value) value.value = hidden ? '0' : '1';
     if (button) {
-      button.textContent = hidden ? 'Show' : 'Hide';
-      button.title = (hidden ? 'Show' : 'Hide') + ' the ' + section
-        + ' section in every page using this template';
+      var action = hidden ? copy.show : copy.hide;
+      button.textContent = action;
+      button.title = formatCopy(copy.visibilityTitle, { action: action, section: section });
     }
     if (flag) flag.hidden = !hidden;
   }
@@ -1043,7 +1095,7 @@
     });
 
     function enqueue(order) {
-      if (orderStatus) orderStatus.textContent = 'Saving order…';
+      if (orderStatus) orderStatus.textContent = copy.savingOrder;
       queue = queue.then(function () { return persist(order); });
     }
 
@@ -1070,11 +1122,11 @@
         state.sections.sort(function (left, right) {
           return saved.indexOf(left.key) - saved.indexOf(right.key);
         });
-        if (orderStatus) orderStatus.textContent = 'Order saved';
+        if (orderStatus) orderStatus.textContent = copy.orderSaved;
         markTemplatePending();
         renderPreview({ order: saved, added: isRecord(payload.added) ? payload.added : {} });
       } catch (_error) {
-        if (orderStatus) orderStatus.textContent = 'Could not save order';
+        if (orderStatus) orderStatus.textContent = copy.orderFailed;
         window.location.reload();
       }
     }
@@ -1112,9 +1164,9 @@
       // overwrite the newer one.
       if (input.value !== binding) return;
       var text = typeof value === 'string' ? value.trim() : '';
-      hint.textContent = text || 'Empty';
+      hint.textContent = text || copy.empty;
     }).catch(function () {
-      hint.textContent = 'Could not resolve this binding.';
+      hint.textContent = copy.bindingFailed;
     });
   }
 
@@ -1225,7 +1277,7 @@
 
   function focusTarget(block, section, fallbackHref, pushHistory, nextView) {
     if (saving) return;
-    if (dirty && !window.confirm('Discard unsaved changes in this selection?')) return;
+    if (dirty && !window.confirm(copy.discardUnsaved)) return;
     dirty = false;
     clearSaveStatus();
 
@@ -1278,7 +1330,9 @@
       selectedSection: entry ? entry.key : '',
       selectedLabel: entry
         ? entry.label
-        : selectedBlock === null ? 'Page settings' : 'Block ' + (selectedBlock + 1),
+        : selectedBlock === null
+          ? copy.pageSettings
+          : formatCopy(copy.block, { number: selectedBlock + 1 }),
       selectedType: entry
         ? entry.type
         : selectedBlock === null ? '' : scalar(blockAt(state.lect, selectedBlock)._type),
@@ -1313,7 +1367,7 @@
       path: blockIndex === null ? [] : ['_blocks', blockIndex],
       languages: new Set(languages.concat(['mis'])),
       language: language,
-      group: blockIndex === null ? 'Page values' : 'Block settings',
+      group: blockIndex === null ? copy.pageValues : copy.blockSettings,
       skipBlocks: blockIndex === null
     });
     return fields;
@@ -1348,7 +1402,7 @@
             path: path.concat([index]),
             languages: context.languages,
             language: context.language,
-            group: humanize(key) + ' · item ' + (index + 1),
+            group: formatCopy(copy.itemGroup, { key: humanize(key), number: index + 1 }),
             skipBlocks: false
           });
         });
@@ -1361,7 +1415,7 @@
           path: path,
           languages: context.languages,
           language: context.language,
-          group: key === '_pointers' ? 'Page pointers' : humanize(key),
+          group: key === '_pointers' ? copy.pagePointers : humanize(key),
           skipBlocks: false
         });
         return;
@@ -1373,7 +1427,7 @@
         key: key,
         value: value,
         kind: key.charAt(0) === '_' ? 'structure' : parentKey === '_pointers' ? 'pointer' : 'attribute',
-        badge: key.charAt(0) === '_' ? 'system' : parentKey === '_pointers' ? 'pointer' : 'attribute',
+        badge: key.charAt(0) === '_' ? copy.system : parentKey === '_pointers' ? copy.pointer : copy.attribute,
         group: context.group,
         readOnly: false
       });
@@ -1439,7 +1493,7 @@
       fieldsHost.appendChild(element(
         'p',
         'rounded-lg bg-gray-50 px-3 py-4 text-sm text-gray-500',
-        'This selection has no scalar values to edit yet.'
+        copy.noScalarValues
       ));
     }
 
@@ -1586,7 +1640,7 @@
       .replace(/[-_]+/g, ' ')
       .replace(/([a-z])([A-Z])/g, '$1 $2')
       .trim();
-    return label ? label.charAt(0).toUpperCase() + label.slice(1) : 'Value';
+    return label ? label.charAt(0).toUpperCase() + label.slice(1) : copy.valueFallback;
   }
 
   function scalar(value) {
@@ -1697,7 +1751,7 @@
       node.textContent = initialsOf(userName);
       node.style.background = presenceColor(userId);
       node.style.opacity = idle ? '0.4' : '1';
-      node.title = userName + (idle ? ' (idle)' : '') + (userId === selfId ? ' (you)' : '');
+      node.title = userName + (idle ? copy.idle : '') + (userId === selfId ? copy.you : '');
       host.appendChild(node);
     });
   }
@@ -1792,7 +1846,9 @@
       .filter(Boolean);
     field.style.outline = '2px solid ' + presenceColor(editors[0]);
     field.style.outlineOffset = '1px';
-    field.title = (names.join(', ') || 'Someone else') + ' is editing this';
+    field.title = formatCopy(copy.editingThis, {
+      names: names.join(', ') || copy.someoneElse
+    });
   }
 
   /** Repaints after a redraw, so an outline survives changing selection. */

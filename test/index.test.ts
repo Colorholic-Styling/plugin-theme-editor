@@ -3,7 +3,7 @@ import { fileURLToPath } from 'node:url';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { clearPluginStateCache, clearTenantCache, tenantRef, type CmsPage } from '@lionrockjs/worker-cms-plugin';
 import { cmsState, themeOverridesKey } from './cms-state';
-import { hostLiquid } from './host-liquid';
+import { testLiquid } from './host-liquid';
 import worker from '../src/index';
 import { applyEditorFields, editorFields } from '../src/editor-model';
 import { previewThemeStore, renderThemePreview, themeRuntime } from '../src/theme/renderer';
@@ -234,12 +234,12 @@ function contentMeta() {
 
 async function renderEditorSection(data: Record<string, unknown>): Promise<string> {
   const source = await readFile(fileURLToPath(new URL('../views/sections/editor.liquid', import.meta.url)), 'utf8');
-  return String(await new (hostLiquid().Liquid)({ outputEscape: 'escape' }).parseAndRender(source, data));
+  return String(await testLiquid({ outputEscape: 'escape' }).parseAndRender(source, data));
 }
 
 async function renderThemesSection(data: Record<string, unknown>): Promise<string> {
   const source = await readFile(fileURLToPath(new URL('../views/sections/themes.liquid', import.meta.url)), 'utf8');
-  return String(await new (hostLiquid().Liquid)({ outputEscape: 'escape' }).parseAndRender(source, data));
+  return String(await testLiquid({ outputEscape: 'escape' }).parseAndRender(source, data));
 }
 
 afterEach(() => {
@@ -256,12 +256,14 @@ describe('plugin contract', () => {
     const manifest = await response.json() as {
       id: string;
       autoTenant: boolean;
+      i18n: boolean;
       nav: Array<{ href: string }>;
       assets: Array<{ path: string }>;
       contentTypes: { readTypes: string[]; writeTypes: string[] };
     };
     expect(manifest.id).toBe('theme-editor');
     expect(manifest.autoTenant).toBe(true);
+    expect(manifest.i18n).toBe(true);
     expect(manifest.nav[0]?.href).toBe('');
     expect(manifest.assets).toEqual([
       { path: '/assets/theme-editor.js', label: 'Theme editor local block composer' },
@@ -358,11 +360,43 @@ describe('plugin contract', () => {
     );
     expect(themes.status).toBe(200);
 
+    const locale = await plugin.fetch(
+      new Request('https://plugin.example.com/__plugin/views/locales/zh-hant.json'),
+      env(),
+    );
+    expect(locale.status).toBe(200);
+    expect(await locale.json()).toMatchObject({
+      plugins: { 'theme-editor': { nav: { index: '主題編輯器' } } },
+    });
+
     const themeSource = await plugin.fetch(
       new Request('https://plugin.example.com/__plugin/views/theme/templates/page.liquid'),
       env(),
     );
     expect(themeSource.status).toBe(404);
+  });
+
+  it('renders translated theme labels through the client-view filter', async () => {
+    const source = await readFile(
+      fileURLToPath(new URL('../views/sections/themes.liquid', import.meta.url)),
+      'utf8',
+    );
+    const html = String(await testLiquid(
+      { outputEscape: 'escape' },
+      {
+        'plugins.theme-editor.themes.title': '主題',
+        'plugins.theme-editor.themes.description': '選擇主題',
+        'plugins.theme-editor.themes.empty': '沒有可用的主題。',
+      },
+    ).parseAndRender(source, {
+      title: 'Themes',
+      description: 'Choose a theme',
+      canEdit: false,
+      themes: [],
+    }));
+    expect(html).toContain('>主題<');
+    expect(html).toContain('>選擇主題<');
+    expect(html).toContain('>沒有可用的主題。<');
   });
 
   it('rejects admin calls without the plugin secret', async () => {

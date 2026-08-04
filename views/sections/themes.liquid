@@ -1,8 +1,8 @@
 <div class="px-4 py-5 sm:px-6 sm:py-8 lg:px-8">
   <div class="mb-4 flex items-center justify-between gap-4">
     <div>
-      <h1 class="text-2xl font-bold text-gray-900">{{ title }}</h1>
-      <p class="mt-1 text-sm text-gray-500">{{ description }}</p>
+      <h1 class="text-2xl font-bold text-gray-900">{{ "plugins.theme-editor.themes.title" | t: title }}</h1>
+      <p class="mt-1 text-sm text-gray-500">{{ "plugins.theme-editor.themes.description" | t: description }}</p>
     </div>
   </div>
 
@@ -14,14 +14,14 @@
     <section class="mb-4 rounded-xl border border-gray-200 bg-white p-4 shadow-sm">
       <div class="flex flex-wrap items-start justify-between gap-3">
         <div>
-          <h2 class="text-sm font-semibold text-gray-900">GitHub themes</h2>
+          <h2 class="text-sm font-semibold text-gray-900">{{ "plugins.theme-editor.themes.github_title" | t: "GitHub themes" }}</h2>
           {% if githubConnected %}
             <p class="mt-1 text-sm text-gray-500">
-              Connected to {{ githubAccount }}. Choose one of the repositories granted to the GitHub App.
+              {{ "plugins.theme-editor.themes.connected" | t: "Connected to {account}. Choose one of the repositories granted to the GitHub App." | replace: "{account}", githubAccount }}
             </p>
           {% else %}
             <p class="mt-1 text-sm text-gray-500">
-              Connect GitHub, choose the repositories this editor may use, then add a theme.
+              {{ "plugins.theme-editor.themes.connect_prompt" | t: "Connect GitHub, choose the repositories this editor may use, then add a theme." }}
             </p>
           {% endif %}
         </div>
@@ -31,20 +31,20 @@
             <div class="flex flex-wrap gap-2">
               <a href="{{ githubManageHref }}" target="_blank" rel="noopener noreferrer"
                  class="inline-flex h-10 items-center justify-center rounded-lg border border-gray-300 bg-white px-4 text-sm font-semibold text-gray-700 hover:bg-gray-50">
-                Manage repositories
+                {{ "plugins.theme-editor.themes.manage_repositories" | t: "Manage repositories" }}
               </a>
               <form method="post" action="{{ githubDisconnectAction }}"
-                    data-confirm="Disconnect GitHub from this CMS? Existing themes remain in the theme bucket.">
+                    data-confirm="{{ "plugins.theme-editor.themes.confirm_disconnect" | t: "Disconnect GitHub from this CMS? Existing themes remain in the theme bucket." }}">
                 <button type="submit"
                         class="inline-flex h-10 items-center justify-center rounded-lg border border-gray-300 bg-white px-4 text-sm font-semibold text-gray-700 hover:bg-gray-50">
-                  Disconnect
+                  {{ "plugins.theme-editor.themes.disconnect" | t: "Disconnect" }}
                 </button>
               </form>
             </div>
           {% else %}
             <a href="{{ githubConnectAction }}"
                class="inline-flex h-10 items-center justify-center rounded-lg bg-gray-900 px-4 text-sm font-semibold text-white hover:bg-black">
-              Connect GitHub
+              {{ "plugins.theme-editor.themes.connect" | t: "Connect GitHub" }}
             </a>
           {% endif %}
         {% endif %}
@@ -63,75 +63,75 @@
         {% if githubRepositories.size > 0 %}
           <form method="post" action="{{ cloneAction }}" class="mt-4 flex flex-wrap items-end gap-3">
             <label class="min-w-0 flex-1" style="min-width:18rem">
-              <span class="mb-1 block text-sm font-medium text-gray-700">Repository</span>
+              <span class="mb-1 block text-sm font-medium text-gray-700">{{ "plugins.theme-editor.themes.repository" | t: "Repository" }}</span>
               <select name="repository" required
                       class="block h-10 w-full rounded-lg border border-gray-300 bg-white px-3 text-sm">
                 {% for repository in githubRepositories %}
                   <option value="{{ repository.fullName }}">
-                    {{ repository.fullName }}{% if repository.private %} · Private{% endif %}
+                    {{ repository.fullName }}{% if repository.private %} · {{ "plugins.theme-editor.themes.private" | t: "Private" }}{% endif %}
                   </option>
                 {% endfor %}
               </select>
             </label>
             <label style="min-width:9rem">
-              <span class="mb-1 block text-sm font-medium text-gray-700">Branch</span>
-              <input name="branch" placeholder="default branch"
+              <span class="mb-1 block text-sm font-medium text-gray-700">{{ "plugins.theme-editor.themes.branch" | t: "Branch" }}</span>
+              <input name="branch" placeholder="{{ "plugins.theme-editor.themes.default_branch" | t: "default branch" }}"
                      class="block h-10 w-full rounded-lg border border-gray-300 px-3 text-sm">
             </label>
             <label style="min-width:9rem">
-              <span class="mb-1 block text-sm font-medium text-gray-700">Directory</span>
-              <input name="path" placeholder="blank for root"
+              <span class="mb-1 block text-sm font-medium text-gray-700">{{ "plugins.theme-editor.themes.directory" | t: "Directory" }}</span>
+              <input name="path" placeholder="{{ "plugins.theme-editor.themes.blank_root" | t: "blank for root" }}"
                      class="block h-10 w-full rounded-lg border border-gray-300 px-3 text-sm">
             </label>
             <label style="min-width:10rem">
-              <span class="mb-1 block text-sm font-medium text-gray-700">Theme id</span>
-              <input name="theme_id" placeholder="from repository"
+              <span class="mb-1 block text-sm font-medium text-gray-700">{{ "plugins.theme-editor.themes.theme_id" | t: "Theme id" }}</span>
+              <input name="theme_id" placeholder="{{ "plugins.theme-editor.themes.from_repository" | t: "from repository" }}"
                      class="block h-10 w-full rounded-lg border border-gray-300 px-3 text-sm">
             </label>
             <button type="submit"
                     class="inline-flex h-10 items-center justify-center rounded-lg bg-indigo-600 px-4 text-sm font-semibold text-white hover:bg-indigo-700">
-              Add theme
+              {{ "plugins.theme-editor.themes.add_theme" | t: "Add theme" }}
             </button>
           </form>
         {% else %}
           <p class="mt-4 text-sm text-gray-500">
-            No repositories are available. Use Manage repositories to grant this App access to a repository.
+            {{ "plugins.theme-editor.themes.no_repositories" | t: "No repositories are available. Use Manage repositories to grant this App access to a repository." }}
           </p>
         {% endif %}
       {% elsif githubAppConfigured %}
         <p class="mt-4 text-sm text-gray-500">
-          GitHub will handle sign-in and repository approval. This CMS stores only the resulting installation id.
+          {{ "plugins.theme-editor.themes.github_approval" | t: "GitHub will handle sign-in and repository approval. This CMS stores only the resulting installation id." }}
         </p>
       {% else %}
         <form method="post" action="{{ cloneAction }}" class="mt-4 flex flex-wrap items-end gap-3">
           <label class="min-w-0 flex-1" style="min-width:18rem">
-            <span class="mb-1 block text-sm font-medium text-gray-700">Repository</span>
-            <input name="url" placeholder="https://github.com/owner/repo"
+            <span class="mb-1 block text-sm font-medium text-gray-700">{{ "plugins.theme-editor.themes.repository" | t: "Repository" }}</span>
+            <input name="url" placeholder="{{ "plugins.theme-editor.themes.repository_url" | t: "https://github.com/owner/repo" }}"
                    class="block h-10 w-full rounded-lg border border-gray-300 px-3 text-sm">
           </label>
           <label style="min-width:8rem">
-            <span class="mb-1 block text-sm font-medium text-gray-700">Branch</span>
+            <span class="mb-1 block text-sm font-medium text-gray-700">{{ "plugins.theme-editor.themes.branch" | t: "Branch" }}</span>
             <input name="branch" value="main"
                    class="block h-10 w-full rounded-lg border border-gray-300 px-3 text-sm">
           </label>
           <label style="min-width:9rem">
-            <span class="mb-1 block text-sm font-medium text-gray-700">Directory</span>
-            <input name="path" placeholder="blank for root"
+            <span class="mb-1 block text-sm font-medium text-gray-700">{{ "plugins.theme-editor.themes.directory" | t: "Directory" }}</span>
+            <input name="path" placeholder="{{ "plugins.theme-editor.themes.blank_root" | t: "blank for root" }}"
                    class="block h-10 w-full rounded-lg border border-gray-300 px-3 text-sm">
           </label>
           <label style="min-width:10rem">
-            <span class="mb-1 block text-sm font-medium text-gray-700">Theme id</span>
-            <input name="theme_id" placeholder="from repository"
+            <span class="mb-1 block text-sm font-medium text-gray-700">{{ "plugins.theme-editor.themes.theme_id" | t: "Theme id" }}</span>
+            <input name="theme_id" placeholder="{{ "plugins.theme-editor.themes.from_repository" | t: "from repository" }}"
                    class="block h-10 w-full rounded-lg border border-gray-300 px-3 text-sm">
           </label>
           <button type="submit"
                   class="inline-flex h-10 items-center justify-center rounded-lg bg-indigo-600 px-4 text-sm font-semibold text-white hover:bg-indigo-700">
-            Clone
+            {{ "plugins.theme-editor.themes.clone" | t: "Clone" }}
           </button>
         </form>
         {% unless hasGitHubToken %}
           <p class="mt-4 rounded-lg bg-amber-50 px-4 py-3 text-sm text-amber-700">
-            Configure the GitHub App, or set <code>GITHUB_TOKEN</code> as a Worker secret for the manual fallback.
+            {{ "plugins.theme-editor.themes.configure_prefix" | t: "Configure the GitHub App, or set " }}<code>GITHUB_TOKEN</code>{{ "plugins.theme-editor.themes.configure_suffix" | t: " as a Worker secret for the manual fallback." }}
           </p>
         {% endunless %}
       {% endif %}
@@ -142,10 +142,10 @@
     <table class="w-full min-w-[560px] text-left">
       <thead class="border-b border-gray-200 bg-gray-50">
         <tr>
-          <th class="px-6 py-3 text-xs font-semibold uppercase tracking-wider text-gray-500">Theme</th>
-          <th class="px-6 py-3 text-xs font-semibold uppercase tracking-wider text-gray-500">Source</th>
-          <th class="px-6 py-3 text-xs font-semibold uppercase tracking-wider text-gray-500">Status</th>
-          <th class="px-6 py-3"><span class="sr-only">Actions</span></th>
+          <th class="px-6 py-3 text-xs font-semibold uppercase tracking-wider text-gray-500">{{ "plugins.theme-editor.themes.table_theme" | t: "Theme" }}</th>
+          <th class="px-6 py-3 text-xs font-semibold uppercase tracking-wider text-gray-500">{{ "plugins.theme-editor.themes.table_source" | t: "Source" }}</th>
+          <th class="px-6 py-3 text-xs font-semibold uppercase tracking-wider text-gray-500">{{ "plugins.theme-editor.themes.table_status" | t: "Status" }}</th>
+          <th class="px-6 py-3"><span class="sr-only">{{ "plugins.theme-editor.themes.table_actions" | t: "Actions" }}</span></th>
         </tr>
       </thead>
       <tbody class="divide-y divide-gray-100">
@@ -154,30 +154,30 @@
             <td class="px-6 py-4">
               <a href="{{ theme.editorHref }}"
                  class="font-semibold text-indigo-600 hover:text-indigo-800">{{ theme.name }}</a>
-              <p class="mt-1 text-sm text-gray-500">{{ theme.description }}</p>
+              <p class="mt-1 text-sm text-gray-500">{% if theme.descriptionKey != blank %}{{ theme.descriptionKey | t: theme.description }}{% else %}{{ theme.description }}{% endif %}</p>
             </td>
             <td class="px-6 py-4 text-sm text-gray-600">{{ theme.source }}</td>
             <td class="px-6 py-4">
-              <span class="inline-flex rounded-full bg-amber-50 px-2.5 py-1 text-xs font-semibold text-amber-700">{{ theme.status }}</span>
+              <span class="inline-flex rounded-full bg-amber-50 px-2.5 py-1 text-xs font-semibold text-amber-700">{% if theme.statusKey != blank %}{{ theme.statusKey | t: theme.status }}{% else %}{{ theme.status }}{% endif %}</span>
             </td>
             <td class="px-6 py-4 text-right">
               <div class="flex items-center justify-end gap-2">
                 {% if theme.canPush and canEdit %}
                   <form method="post" action="{{ pushAction }}" class="shrink-0"
-                        data-confirm="Commit this theme's templates to {{ theme.source }}?">
+                        data-confirm="{{ "plugins.theme-editor.themes.confirm_commit" | t: "Commit this theme's templates to {source}?" | replace: "{source}", theme.source }}">
                     <input type="hidden" name="theme" value="{{ theme.id }}">
                     <button type="submit"
-                            title="Commit and push {{ theme.name }} to {{ theme.source }}"
+                            title="{{ "plugins.theme-editor.themes.commit_title" | t: "Commit and push {name} to {source}" | replace: "{name}", theme.name | replace: "{source}", theme.source }}"
                             class="inline-flex h-10 items-center justify-center rounded-lg border border-gray-300 bg-white px-4 text-sm font-semibold text-gray-700 hover:bg-gray-50">
-                      Push to GitHub
+                      {{ "plugins.theme-editor.themes.push_to_github" | t: "Push to GitHub" }}
                     </button>
                   </form>
                 {% endif %}
                 <a href="{{ theme.editorHref }}"
-                   title="Edit {{ theme.name }}"
-                   aria-label="Edit {{ theme.name }}"
+                   title="{{ "plugins.theme-editor.themes.edit_title" | t: "Edit {name}" | replace: "{name}", theme.name }}"
+                   aria-label="{{ "plugins.theme-editor.themes.edit_title" | t: "Edit {name}" | replace: "{name}", theme.name }}"
                    class="inline-flex h-10 items-center justify-center rounded-lg bg-indigo-600 px-4 text-sm font-semibold text-white hover:bg-indigo-700">
-                  Edit theme
+                  {{ "plugins.theme-editor.themes.edit_theme" | t: "Edit theme" }}
                 </a>
               </div>
 
@@ -190,17 +190,17 @@
               {% if theme.canDelete and canEdit %}
                 <details class="mt-2 text-left">
                   <summary class="cursor-pointer text-right text-xs font-semibold text-gray-500 hover:text-red-700">
-                    Delete theme
+                    {{ "plugins.theme-editor.themes.delete_theme" | t: "Delete theme" }}
                   </summary>
                   <form method="post" action="{{ deleteAction }}"
                         class="mt-2 rounded-lg border border-red-200 bg-red-50 p-3"
-                        data-confirm="Delete {{ theme.name }} and everything in it? This cannot be undone.">
+                        data-confirm="{{ "plugins.theme-editor.themes.confirm_delete" | t: "Delete {name} and everything in it? This cannot be undone." | replace: "{name}", theme.name }}">
                     <input type="hidden" name="theme" value="{{ theme.id }}">
                     <p class="mb-2 text-xs text-red-700">
-                      Removes every file in this theme{% if theme.repo %}. The repository at {{ theme.source }} is not touched, so it can be cloned again{% else %} and it has no repository to clone it back from{% endif %}.
+                      {% if theme.repo %}{{ "plugins.theme-editor.themes.delete_repo_description" | t: "Removes every file in this theme. The repository at {source} is not touched, so it can be cloned again." | replace: "{source}", theme.source }}{% else %}{{ "plugins.theme-editor.themes.delete_local_description" | t: "Removes every file in this theme and it has no repository to clone it back from." }}{% endif %}
                     </p>
                     <label class="block text-xs font-medium text-red-700">
-                      Type <span class="font-mono">{{ theme.id }}</span> to confirm
+                      {{ "plugins.theme-editor.themes.type_to_confirm" | t: "Type {id} to confirm" | replace: "{id}", theme.id }}
                       <input type="text" name="confirm_id" autocomplete="off" spellcheck="false"
                              {%- comment -%}
                                indigo, not red: the host compiles Tailwind from
@@ -212,7 +212,7 @@
                     </label>
                     <button type="submit"
                             class="mt-2 inline-flex h-10 w-full items-center justify-center rounded-lg bg-red-600 px-4 text-sm font-semibold text-white hover:bg-red-700">
-                      Delete {{ theme.name }}
+                      {{ "plugins.theme-editor.themes.delete_named" | t: "Delete {name}" | replace: "{name}", theme.name }}
                     </button>
                   </form>
                 </details>
@@ -221,7 +221,7 @@
           </tr>
         {% else %}
           <tr>
-            <td colspan="4" class="px-6 py-10 text-center text-sm text-gray-400">No themes are available.</td>
+            <td colspan="4" class="px-6 py-10 text-center text-sm text-gray-400">{{ "plugins.theme-editor.themes.empty" | t: "No themes are available." }}</td>
           </tr>
         {% endfor %}
       </tbody>

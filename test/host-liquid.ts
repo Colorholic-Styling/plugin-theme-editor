@@ -16,6 +16,7 @@ const bundle = resolve(process.cwd(), 'test/vendor/liquid.browser.min.js');
 export interface HostLiquid {
   Liquid: new (options?: Record<string, unknown>) => {
     parseAndRender(source: string, data: Record<string, unknown>): Promise<unknown>;
+    registerFilter(name: string, filter: (...args: unknown[]) => unknown): void;
   };
 }
 
@@ -40,4 +41,19 @@ export function hostLiquid(): HostLiquid {
   const module = (globalThis as { liquidjs?: HostLiquid }).liquidjs;
   if (!module) throw new Error('The host LiquidJS bundle did not install itself');
   return module;
+}
+
+/** A host-like engine with the CMS translation filter available to view tests. */
+export function testLiquid(
+  options: Record<string, unknown> = {},
+  catalog: Record<string, string> = {},
+): InstanceType<HostLiquid['Liquid']> {
+  const engine = new (hostLiquid().Liquid)(options);
+  engine.registerFilter('t', (...args: unknown[]) => {
+    const [key, fallback] = args;
+    const messageKey = String(key ?? '');
+    return catalog[messageKey]
+      ?? (fallback === undefined || fallback === null ? messageKey : String(fallback));
+  });
+  return engine;
 }
