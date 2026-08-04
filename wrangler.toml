@@ -17,9 +17,9 @@ binding = "CF_VERSION_METADATA"
 # CMS_URL = "https://cms.eventuai.com"
 # GitHub App identity values are safe as vars. Configure the private key,
 # client secret, and state secret with `wrangler secret put`; see README.
-# GITHUB_APP_ID = "4438299"
-# GITHUB_APP_SLUG = "eventuai-theme-editor"
-# GITHUB_APP_CLIENT_ID = "Iv23li3rHFYFrjmqLsk5"
+GITHUB_APP_ID = "4438299"
+GITHUB_APP_SLUG = "eventuai-theme-editor"
+GITHUB_APP_CLIENT_ID = "Iv23li3rHFYFrjmqLsk5"
 
 # The theme library. The bucket is the root: every top-level folder is a theme,
 # so `example-theme/templates/page.json` is that theme's page template.
@@ -37,4 +37,4 @@ bucket_name = "cms-themes"
 # can use CMS_URL + PLUGIN_SECRET until the registry is configured.
 [[kv_namespaces]]
 binding = "TENANTS"
-id = "560f47c46bc04bb08d4ed1fdad839be9"
+id = "4405064e70e5459bb032077d6eba8c7e"
