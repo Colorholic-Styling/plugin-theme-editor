@@ -17,9 +17,9 @@ binding = "CF_VERSION_METADATA"
 # CMS_URL = "https://cms.eventuai.com"
 # GitHub App identity values are safe as vars. Configure the private key,
 # client secret, and state secret with `wrangler secret put`; see README.
-GITHUB_APP_ID = "4438299"
-GITHUB_APP_SLUG = "eventuai-theme-editor"
-GITHUB_APP_CLIENT_ID = "Iv23li3rHFYFrjmqLsk5"
+GITHUB_APP_ID = "4487578"
+GITHUB_APP_SLUG = "colorholic-theme-editor"
+GITHUB_APP_CLIENT_ID = "Iv23liI90vPCeqCTnusT"
 
 # The theme library. The bucket is the root: every top-level folder is a theme,
 # so `example-theme/templates/page.json` is that theme's page template.
