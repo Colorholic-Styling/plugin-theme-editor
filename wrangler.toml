@@ -14,24 +14,12 @@ run_worker_first = true
 binding = "CF_VERSION_METADATA"
 
 [vars]
-CMS_URL = "https://cms.eventuai.com"
+# CMS_URL = "https://cms.eventuai.com"
 # GitHub App identity values are safe as vars. Configure the private key,
 # client secret, and state secret with `wrangler secret put`; see README.
-GITHUB_APP_ID = "4438299"
-GITHUB_APP_SLUG = "eventuai-theme-editor"
-GITHUB_APP_CLIENT_ID = "Iv23li3rHFYFrjmqLsk5"
-
-
-# LEGACY, read-once. Pending editor changes now live on the CMS that owns them
-# (plugin state key `theme.overrides.<theme id>`): they are that host's content
-# decisions, and a read-modify-write like this needs D1's strong consistency
-# rather than KV's eventual consistency, which made a toggle visibly bounce
-# back. Entries still here are adopted the first time a theme is opened and
-# deleted from this namespace, so it drains on its own. Unbind it once
-# `wrangler kv key list` shows it empty.
-[[kv_namespaces]]
-binding = "THEME_OVERRIDES"
-id = "5881153cac594025ac7f2e19bd8ffadb"
+# GITHUB_APP_ID = "4438299"
+# GITHUB_APP_SLUG = "eventuai-theme-editor"
+# GITHUB_APP_CLIENT_ID = "Iv23li3rHFYFrjmqLsk5"
 
 # The theme library. The bucket is the root: every top-level folder is a theme,
 # so `example-theme/templates/page.json` is that theme's page template.

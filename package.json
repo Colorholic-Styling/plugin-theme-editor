@@ -29,7 +29,7 @@
     "@lionrockjs/worker-cms-plugin": "0.3.4"
   },
   "devDependencies": {
-    "@cloudflare/workers-types": "^5.20260731.1",
+    "@cloudflare/workers-types": "^5.20260804.1",
     "@types/node": "^26.1.2",
     "esbuild": "^0.28.1",
     "happy-dom": "^20.11.1",
