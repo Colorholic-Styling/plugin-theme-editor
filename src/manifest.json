@@ -2,6 +2,7 @@
   "id": "theme-editor",
   "name": "Theme Editor",
   "version": "0.1.0",
+  "i18n": true,
   "autoTenant": true,
   "nav": [
     {

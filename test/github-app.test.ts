@@ -16,7 +16,7 @@ import {
 } from '@lionrockjs/worker-cms-plugin';
 import worker from '../src/index';
 import type { PluginEnv } from '../src/types';
-import { hostLiquid } from './host-liquid';
+import { testLiquid } from './host-liquid';
 
 const SECRET = 'theme-editor-test-secret';
 const STATE_SECRET = 'state-secret-with-at-least-32-bytes';
@@ -226,7 +226,7 @@ async function renderThemes(data: Record<string, unknown>): Promise<string> {
     fileURLToPath(new URL('../views/sections/themes.liquid', import.meta.url)),
     'utf8',
   );
-  return String(await new (hostLiquid().Liquid)({ outputEscape: 'escape' }).parseAndRender(source, data));
+  return String(await testLiquid({ outputEscape: 'escape' }).parseAndRender(source, data));
 }
 
 afterEach(() => {

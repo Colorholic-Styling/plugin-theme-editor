@@ -1,11 +1,47 @@
 <div class="px-4 py-5 sm:px-6 sm:py-8 lg:px-8"
      data-theme-editor
      data-editor-action="{{ loadAction }}"
-     data-settings-mode="{% if schemaMode %}schema{% else %}values{% endif %}">
+     data-settings-mode="{% if schemaMode %}schema{% else %}values{% endif %}"
+     data-theme-editor-copy-discard-unsaved="{{ "plugins.theme-editor.client.discard_unsaved" | t: "Discard unsaved changes in this selection?" }}"
+     data-theme-editor-copy-edit-content="{{ "plugins.theme-editor.client.edit_content" | t: "Edit content" }}"
+     data-theme-editor-copy-saving="{{ "plugins.theme-editor.client.saving" | t: "Saving…" }}"
+     data-theme-editor-copy-changes-failed="{{ "plugins.theme-editor.client.changes_failed" | t: "Changes could not be saved." }}"
+     data-theme-editor-copy-changes-saved="{{ "plugins.theme-editor.client.changes_saved" | t: "Changes saved" }}"
+     data-theme-editor-copy-save-changes="{{ "plugins.theme-editor.editor.save_changes" | t: "Save changes" }}"
+     data-theme-editor-copy-schema-no-settings="{{ "plugins.theme-editor.client.schema_no_settings" | t: "This section has no schema settings." }}"
+     data-theme-editor-copy-schema-no-binding="{{ "plugins.theme-editor.client.schema_no_binding" | t: "No template section binds this block, so there is nothing to save these to." }}"
+     data-theme-editor-copy-empty="{{ "plugins.theme-editor.client.empty" | t: "Empty" }}"
+     data-theme-editor-copy-no-stored-value="{{ "plugins.theme-editor.client.no_stored_value" | t: "No stored value backs this setting yet." }}"
+     data-theme-editor-copy-saving-order="{{ "plugins.theme-editor.client.saving_order" | t: "Saving order…" }}"
+     data-theme-editor-copy-order-saved="{{ "plugins.theme-editor.client.order_saved" | t: "Order saved" }}"
+     data-theme-editor-copy-order-failed="{{ "plugins.theme-editor.client.order_failed" | t: "Could not save order" }}"
+     data-theme-editor-copy-binding-failed="{{ "plugins.theme-editor.client.binding_failed" | t: "Could not resolve this binding." }}"
+     data-theme-editor-copy-show="{{ "plugins.theme-editor.editor.show" | t: "Show" }}"
+     data-theme-editor-copy-hide="{{ "plugins.theme-editor.editor.hide" | t: "Hide" }}"
+     data-theme-editor-copy-visibility-title="{{ "plugins.theme-editor.editor.visibility_title" | t: "{action} the {section} section in every page using this template" }}"
+     data-theme-editor-copy-no-scalar-values="{{ "plugins.theme-editor.editor.no_scalar_values" | t: "This selection has no scalar values to edit yet." }}"
+     data-theme-editor-copy-preview-edit-block="{{ "plugins.theme-editor.editor.preview_edit_block" | t: "Edit {type} block" }}"
+     data-theme-editor-copy-preview-loading="{{ "plugins.theme-editor.editor.preview_loading" | t: "Loading preview…" }}"
+     data-theme-editor-copy-preview-load-failed="{{ "plugins.theme-editor.editor.preview_load_failed" | t: "The preview could not be loaded." }}"
+     data-theme-editor-copy-preview-render-failed="{{ "plugins.theme-editor.editor.preview_render_failed" | t: "The preview could not be rendered." }}"
+     data-theme-editor-copy-page-settings="{{ "plugins.theme-editor.client.page_settings" | t: "Page settings" }}"
+     data-theme-editor-copy-block="{{ "plugins.theme-editor.client.block" | t: "Block {number}" }}"
+     data-theme-editor-copy-page-values="{{ "plugins.theme-editor.client.page_values" | t: "Page values" }}"
+     data-theme-editor-copy-block-settings="{{ "plugins.theme-editor.client.block_settings" | t: "Block settings" }}"
+     data-theme-editor-copy-item-group="{{ "plugins.theme-editor.client.item_group" | t: "{key} · item {number}" }}"
+     data-theme-editor-copy-page-pointers="{{ "plugins.theme-editor.client.page_pointers" | t: "Page pointers" }}"
+     data-theme-editor-copy-system="{{ "plugins.theme-editor.client.system" | t: "system" }}"
+     data-theme-editor-copy-pointer="{{ "plugins.theme-editor.client.pointer" | t: "pointer" }}"
+     data-theme-editor-copy-attribute="{{ "plugins.theme-editor.client.attribute" | t: "attribute" }}"
+     data-theme-editor-copy-value-fallback="{{ "plugins.theme-editor.client.value_fallback" | t: "Value" }}"
+     data-theme-editor-copy-someone-else="{{ "plugins.theme-editor.client.someone_else" | t: "Someone else" }}"
+     data-theme-editor-copy-editing-this="{{ "plugins.theme-editor.client.editing_this" | t: "{names} is editing this" }}"
+     data-theme-editor-copy-idle="{{ "plugins.theme-editor.client.idle" | t: " (idle)" }}"
+     data-theme-editor-copy-you="{{ "plugins.theme-editor.client.you" | t: " (you)" }}">
   <div class="flex items-center justify-between gap-4 mb-4">
     <div>
       <h1 class="text-2xl font-bold text-gray-900">{{ title }}</h1>
-      <p class="mt-1 text-sm text-gray-500">{{ description }}</p>
+      <p class="mt-1 text-sm text-gray-500">{{ "plugins.theme-editor.editor.description" | t: description }}</p>
     </div>
     <div class="flex items-center gap-2">
       {%- comment -%}
@@ -19,27 +55,27 @@
              data-presence-page-id="{{ presencePageId }}"
              data-presence-user-id="{{ presenceUserId }}"
              data-presence-user-name="{{ presenceUserName }}"
-             aria-label="People editing this page"></div>
+             aria-label="{{ "plugins.theme-editor.editor.people_editing" | t: "People editing this page" }}"></div>
       {% endif %}
       <a href="{{ dashboardHref }}"
          class="inline-flex h-10 items-center justify-center rounded-lg border border-gray-300 bg-white px-4 text-sm font-semibold text-gray-700 hover:bg-gray-50">
-        Themes
+        {{ "plugins.theme-editor.editor.themes" | t: "Themes" }}
       </a>
       {% if nativeEditHref != blank %}
         <a href="{{ nativeEditHref }}"
            class="inline-flex h-10 items-center justify-center rounded-lg border border-gray-300 bg-white px-4 text-sm font-semibold text-gray-700 hover:bg-gray-50">
-          Native editor
+          {{ "plugins.theme-editor.editor.native_editor" | t: "Native editor" }}
         </a>
       {% endif %}
       {% if canPublish %}
         <form method="post" action="{{ publishAction }}" class="shrink-0"
               data-theme-editor-publish{% unless hasPending %} hidden{% endunless %}
-              data-confirm="{% if publishTarget != blank %}Write these changes into the theme and commit them to {{ publishTarget }}?{% else %}Write these changes into the theme?{% endif %}">
+              data-confirm="{% if publishTarget != blank %}{{ "plugins.theme-editor.editor.publish_confirm_push" | t: "Write these changes into the theme and commit them to {target}?" | replace: "{target}", publishTarget }}{% else %}{{ "plugins.theme-editor.editor.publish_confirm" | t: "Write these changes into the theme?" }}{% endif %}">
           <input type="hidden" name="theme" value="{{ themeId }}">
           <button type="submit"
-                  title="{% if publishTarget != blank %}Publish and push to {{ publishTarget }}{% else %}Publish to the theme bucket{% endif %}"
+                  title="{% if publishTarget != blank %}{{ "plugins.theme-editor.editor.publish_title_push" | t: "Publish and push to {target}" | replace: "{target}", publishTarget }}{% else %}{{ "plugins.theme-editor.editor.publish_title" | t: "Publish to the theme bucket" }}{% endif %}"
                   class="inline-flex h-10 items-center justify-center rounded-lg bg-indigo-600 px-4 text-sm font-semibold text-white hover:bg-indigo-700">
-            {% if publishTarget != blank %}Publish &amp; push{% else %}Publish{% endif %}
+            {% if publishTarget != blank %}{{ "plugins.theme-editor.editor.publish_push" | t: "Publish & push" }}{% else %}{{ "plugins.theme-editor.editor.publish" | t: "Publish" }}{% endif %}
             <span class="ml-2 inline-flex items-center rounded-full bg-indigo-500 px-2 text-xs"
                   data-theme-editor-pending-count>{{ pendingTemplates }}</span>
           </button>
@@ -50,12 +86,7 @@
 
   {% if canPublish and hasPending %}
     <p class="mb-4 rounded-lg border border-amber-200 bg-amber-50 px-4 py-3 text-sm text-amber-700">
-      {{ pendingTemplates }} template(s) have editor changes that are not in the theme yet.
-      {% if publishTarget != blank %}
-        Publishing writes them into the theme and commits them to {{ publishTarget }} in one step.
-      {% else %}
-        Publishing writes them into the theme's own files.
-      {% endif %}
+      {% if publishTarget != blank %}{{ "plugins.theme-editor.editor.pending_push" | t: "{count} template(s) have editor changes that are not in the theme yet. Publishing writes them into the theme and commits them to {target} in one step." | replace: "{count}", pendingTemplates | replace: "{target}", publishTarget }}{% else %}{{ "plugins.theme-editor.editor.pending_bucket" | t: "{count} template(s) have editor changes that are not in the theme yet. Publishing writes them into the theme's own files." | replace: "{count}", pendingTemplates }}{% endif %}
     </p>
   {% endif %}
 
@@ -70,7 +101,7 @@
     <div class="min-w-0 flex-1" style="min-width:16rem">
       <label id="theme_editor_page_label"
              for="theme_editor_page_search"
-             class="mb-1 block text-sm font-medium text-gray-700">CMS page</label>
+             class="mb-1 block text-sm font-medium text-gray-700">{{ "plugins.theme-editor.editor.cms_page" | t: "CMS page" }}</label>
       <select name="page_id"
               aria-labelledby="theme_editor_page_label"
               data-theme-editor-page-select
@@ -89,12 +120,12 @@
                  aria-autocomplete="list"
                  aria-expanded="false"
                  aria-controls="theme_editor_page_results"
-                 placeholder="Search pages by name, type, or id"
+                 placeholder="{{ "plugins.theme-editor.editor.search_pages" | t: "Search pages by name, type, or id" }}"
                  data-theme-editor-page-search
                  class="block h-10 w-full rounded-lg border border-gray-300 bg-white px-3 pr-10 text-sm focus:border-transparent focus:outline-none focus:ring-2 focus:ring-indigo-500">
           <button type="button"
-                  title="Show CMS pages"
-                  aria-label="Show CMS pages"
+                  title="{{ "plugins.theme-editor.editor.show_pages" | t: "Show CMS pages" }}"
+                  aria-label="{{ "plugins.theme-editor.editor.show_pages" | t: "Show CMS pages" }}"
                   data-theme-editor-page-toggle
                   class="absolute right-0 top-0 inline-flex h-10 w-10 items-center justify-center rounded-r-lg text-gray-500 hover:bg-gray-50 hover:text-gray-700">
             <svg class="h-4 w-4" viewBox="0 0 20 20" fill="none" stroke="currentColor" stroke-width="2" aria-hidden="true">
@@ -104,17 +135,17 @@
         </div>
         <div id="theme_editor_page_results"
              role="listbox"
-             aria-label="CMS pages"
+             aria-label="{{ "plugins.theme-editor.editor.cms_pages" | t: "CMS pages" }}"
              data-theme-editor-page-results
              class="absolute left-0 right-0 top-full z-20 mt-1 hidden max-h-64 overflow-auto rounded-lg border border-gray-200 bg-white py-1 shadow-lg">
           <p class="hidden px-3 py-3 text-sm text-gray-500" data-theme-editor-page-empty>
-            No matching pages.
+            {{ "plugins.theme-editor.editor.no_matching_pages" | t: "No matching pages." }}
           </p>
         </div>
       </div>
     </div>
     <label style="min-width:12rem">
-      <span class="mb-1 block text-sm font-medium text-gray-700">Theme template</span>
+      <span class="mb-1 block text-sm font-medium text-gray-700">{{ "plugins.theme-editor.editor.theme_template" | t: "Theme template" }}</span>
       <select name="template" class="block h-10 w-full rounded-lg border border-gray-300 bg-white px-3 text-sm">
         {% for template in templates %}
           <option value="{{ template.id }}"{% if template.selected %} selected{% endif %}>{{ template.label }}</option>
@@ -122,7 +153,7 @@
       </select>
     </label>
     <label style="min-width:10rem">
-      <span class="mb-1 block text-sm font-medium text-gray-700">Content language</span>
+      <span class="mb-1 block text-sm font-medium text-gray-700">{{ "plugins.theme-editor.editor.content_language" | t: "Content language" }}</span>
       <select name="language" class="block h-10 w-full rounded-lg border border-gray-300 bg-white px-3 text-sm">
         {% for option in languages %}
           <option value="{{ option.code }}"{% if option.selected %} selected{% endif %}>{{ option.code }}</option>
@@ -131,7 +162,7 @@
     </label>
     <button data-theme-editor-load-button
             class="inline-flex h-10 items-center justify-center rounded-lg bg-indigo-600 px-4 text-sm font-semibold text-white hover:bg-indigo-700" type="submit">
-      Load
+      {{ "plugins.theme-editor.editor.load" | t: "Load" }}
     </button>
   </form>
 
@@ -140,14 +171,14 @@
     <div class="flex min-w-0 flex-col gap-4 xl:flex-row">
       <div class="min-w-0 flex-1 rounded-xl border border-gray-200 bg-gray-100 p-2 shadow-sm">
         <div class="mb-2 flex items-center justify-between gap-3 px-2">
-          <p class="text-xs font-semibold uppercase tracking-wide text-gray-500">Theme preview</p>
+          <p class="text-xs font-semibold uppercase tracking-wide text-gray-500">{{ "plugins.theme-editor.editor.preview" | t: "Theme preview" }}</p>
           <p class="truncate text-xs text-gray-500">{{ selectedPage.name }}</p>
         </div>
         <iframe
           data-theme-editor-preview
           data-theme-editor-preview-data="{{ previewDataHref }}"
           data-theme-editor-preview-bundle="{{ previewBundleHref }}"
-          title="Theme preview for {{ selectedPage.name }}"
+          title="{{ "plugins.theme-editor.editor.preview_title" | t: "Theme preview for {name}" | replace: "{name}", selectedPage.name }}"
           src="{{ previewHref }}"
           class="block w-full rounded-lg border border-gray-300 bg-white"
           style="height:72vh;min-height:32rem">
@@ -164,29 +195,29 @@
             <section data-theme-editor-list-panel
                      style="width:50%;flex:0 0 50%">
               <div class="border-b border-gray-200 p-4">
-                <h2 class="text-lg font-bold text-gray-900" tabindex="-1" data-theme-editor-list-heading>Settings</h2>
-                <p class="mt-1 text-sm text-gray-500">Every section this theme template declares, in the order it renders them.</p>
+                <h2 class="text-lg font-bold text-gray-900" tabindex="-1" data-theme-editor-list-heading>{{ "plugins.theme-editor.editor.settings" | t: "Settings" }}</h2>
+                <p class="mt-1 text-sm text-gray-500">{{ "plugins.theme-editor.editor.settings_description" | t: "Every section this theme template declares, in the order it renders them." }}</p>
               </div>
 
-              <nav class="p-3" aria-label="Editable theme sections">
+              <nav class="p-3" aria-label="{{ "plugins.theme-editor.editor.editable_sections" | t: "Editable theme sections" }}">
                 <a href="{{ pageSettingsHref }}"
                    data-theme-editor-focus
                    data-block=""
                    data-section=""
-                   data-label="Page settings"
+                   data-label="{{ "plugins.theme-editor.editor.page_settings" | t: "Page settings" }}"
                    data-type=""
                    class="mb-1 block rounded-lg px-3 py-2 text-sm{% if pageSelected %} bg-indigo-50 font-semibold text-indigo-700{% else %} text-gray-700 hover:bg-gray-50{% endif %}"
                    {% if pageSelected %}aria-current="true"{% endif %}>
-                  Page values
+                  {{ "plugins.theme-editor.editor.page_values" | t: "Page values" }}
                 </a>
 
                 {% if hasSections %}
                   <div class="mt-3 mb-2 flex items-center justify-between gap-2 px-3">
                     <p class="text-xs font-semibold uppercase tracking-wide text-gray-500">
-                      Template sections
+                      {{ "plugins.theme-editor.editor.template_sections" | t: "Template sections" }}
                     </p>
                     {% if canEditStructure %}
-                      <span class="text-xs text-gray-400" data-theme-editor-order-status aria-live="polite">Drag to reorder</span>
+                      <span class="text-xs text-gray-400" data-theme-editor-order-status aria-live="polite">{{ "plugins.theme-editor.editor.drag_reorder" | t: "Drag to reorder" }}</span>
                     {% endif %}
                   </div>
                   <div data-theme-editor-section-list
@@ -199,8 +230,8 @@
                         <button type="button"
                                 draggable="true"
                                 data-theme-editor-drag-handle
-                                title="Drag {{ section.label }} to reorder"
-                                aria-label="Drag {{ section.label }} to reorder"
+                                title="{{ "plugins.theme-editor.editor.drag_section" | t: "Drag {label} to reorder" | replace: "{label}", section.label }}"
+                                aria-label="{{ "plugins.theme-editor.editor.drag_section" | t: "Drag {label} to reorder" | replace: "{label}", section.label }}"
                                 class="inline-flex h-10 w-7 shrink-0 cursor-grab items-center justify-center rounded text-gray-400 hover:bg-gray-50 hover:text-gray-700 active:cursor-grabbing">
                           <svg class="h-4 w-4" viewBox="0 0 16 16" fill="currentColor" aria-hidden="true">
                             <circle cx="5" cy="3" r="1.2"></circle><circle cx="11" cy="3" r="1.2"></circle>
@@ -218,8 +249,13 @@
                          class="min-w-0 flex-1 block rounded-lg px-3 py-2 text-sm{% if section.selected %} bg-indigo-50 font-semibold text-indigo-700{% else %} text-gray-700 hover:bg-gray-50{% endif %}"
                          {% if section.selected %}aria-current="true"{% endif %}>
                         <span class="block truncate">{{ section.label }}</span>
-                        <span class="block truncate text-xs text-gray-400">{{ section.type }}{% if section.hasBlock %} · block {{ section.blockNumber }}{% if section.blockTitle != blank %} · {{ section.blockTitle }}{% endif %}{% else %} · no page block{% endif %}<span data-theme-editor-hidden-flag{% unless section.hidden %} hidden{% endunless %}> · hidden</span></span>
+                        <span class="block truncate text-xs text-gray-400">{{ section.type }}{% if section.hasBlock %} · {{ "plugins.theme-editor.editor.block" | t: "block {number}" | replace: "{number}", section.blockNumber }}{% if section.blockTitle != blank %} · {{ section.blockTitle }}{% endif %}{% else %} · {{ "plugins.theme-editor.editor.no_page_block" | t: "no page block" }}{% endif %}<span data-theme-editor-hidden-flag{% unless section.hidden %} hidden{% endunless %}> · {{ "plugins.theme-editor.editor.hidden" | t: "hidden" }}</span></span>
                       </a>
+                      {% if section.hidden %}
+                        {% assign visibility_action = "plugins.theme-editor.editor.show" | t: "Show" %}
+                      {% else %}
+                        {% assign visibility_action = "plugins.theme-editor.editor.hide" | t: "Hide" %}
+                      {% endif %}
                       {% if canEdit %}
                         <form method="post" action="{{ visibilityAction }}" class="shrink-0"
                               data-theme-editor-visibility
@@ -232,21 +268,21 @@
                           <input type="hidden" name="hidden" value="{% if section.hidden %}0{% else %}1{% endif %}" data-theme-editor-visibility-value>
                           <button type="submit"
                                   data-theme-editor-visibility-button
-                                  title="{% if section.hidden %}Show{% else %}Hide{% endif %} the {{ section.key }} section in every page using this template"
-                                  class="inline-flex h-10 shrink-0 items-center justify-center rounded-lg border border-gray-300 bg-white px-3 text-sm font-semibold text-gray-700 hover:bg-gray-50">{%- if section.hidden -%}Show{%- else -%}Hide{%- endif -%}</button>
+                                  title="{{ "plugins.theme-editor.editor.visibility_title" | t: "{action} the {section} section in every page using this template" | replace: "{action}", visibility_action | replace: "{section}", section.key }}"
+                                  class="inline-flex h-10 shrink-0 items-center justify-center rounded-lg border border-gray-300 bg-white px-3 text-sm font-semibold text-gray-700 hover:bg-gray-50">{%- if section.hidden -%}{{ "plugins.theme-editor.editor.show" | t: "Show" }}{%- else -%}{{ "plugins.theme-editor.editor.hide" | t: "Hide" }}{%- endif -%}</button>
                         </form>
                       {% endif %}
                       {% if canEditStructure %}
                         <form method="post" action="{{ sectionDeleteAction }}" class="shrink-0"
-                              data-confirm="Delete the {{ section.label }} section? It will be removed from the template when changes are published.">
+                              data-confirm="{{ "plugins.theme-editor.editor.confirm_delete_section" | t: "Delete the {label} section? It will be removed from the template when changes are published." | replace: "{label}", section.label }}">
                           <input type="hidden" name="theme" value="{{ themeId }}">
                           <input type="hidden" name="template" value="{{ templateId }}">
                           <input type="hidden" name="section" value="{{ section.key }}">
                           <input type="hidden" name="page_id" value="{{ selectedPage.id }}">
                           <input type="hidden" name="language" value="{{ language }}">
                           <button type="submit"
-                                  title="Delete the {{ section.label }} section"
-                                  aria-label="Delete the {{ section.label }} section"
+                                  title="{{ "plugins.theme-editor.editor.delete_section_title" | t: "Delete the {label} section" | replace: "{label}", section.label }}"
+                                  aria-label="{{ "plugins.theme-editor.editor.delete_section_title" | t: "Delete the {label} section" | replace: "{label}", section.label }}"
                                   class="inline-flex h-10 w-10 shrink-0 items-center justify-center rounded-lg border border-red-200 bg-white text-red-600 hover:bg-red-50 hover:text-red-700">
                             <svg class="h-4 w-4" viewBox="0 0 20 20" fill="currentColor" aria-hidden="true">
                               <path fill-rule="evenodd" d="M8.5 3a1.5 1.5 0 0 0-1.415 1H4.75a.75.75 0 0 0 0 1.5h.545l.717 10.04A1.5 1.5 0 0 0 7.508 17h4.984a1.5 1.5 0 0 0 1.496-1.46l.717-10.04h.545a.75.75 0 0 0 0-1.5h-2.335A1.5 1.5 0 0 0 11.5 3h-3Zm.085 1a.5.5 0 0 1 .415-.22h2a.5.5 0 0 1 .415.22h-2.83Zm-.833 3.25a.75.75 0 0 1 .748.697l.4 5.5a.75.75 0 1 1-1.496.106l-.4-5.5a.75.75 0 0 1 .748-.803Zm4.496 0a.75.75 0 0 1 .748.803l-.4 5.5a.75.75 0 1 1-1.496-.106l.4-5.5a.75.75 0 0 1 .748-.697Z" clip-rule="evenodd"></path>
@@ -259,7 +295,7 @@
                   </div>
                 {% else %}
                   <p class="mt-3 rounded-lg bg-gray-50 px-3 py-4 text-sm text-gray-500">
-                    This theme template declares no sections, so it has none to list.
+                    {{ "plugins.theme-editor.editor.no_sections" | t: "This theme template declares no sections, so it has none to list." }}
                   </p>
                 {% endif %}
 
@@ -272,7 +308,7 @@
                     <input type="hidden" name="page_id" value="{{ selectedPage.id }}">
                     <input type="hidden" name="language" value="{{ language }}">
                     <label class="min-w-0 flex-1">
-                      <span class="mb-1 block text-xs font-semibold text-gray-600">Add a section</span>
+                      <span class="mb-1 block text-xs font-semibold text-gray-600">{{ "plugins.theme-editor.editor.add_section" | t: "Add a section" }}</span>
                       <select name="type"
                               class="block h-10 w-full rounded-lg border border-gray-300 bg-white px-2 text-sm">
                         {% for option in sectionTypes %}
@@ -282,26 +318,27 @@
                     </label>
                     <button type="submit"
                             class="inline-flex h-10 shrink-0 items-center justify-center rounded-lg bg-indigo-600 px-3 text-sm font-semibold text-white hover:bg-indigo-700">
-                      Add
+                      {{ "plugins.theme-editor.editor.add" | t: "Add" }}
                     </button>
                   </form>
                 {% endif %}
 
                 {% if hasOrphanBlocks %}
                   <p class="mt-3 mb-2 px-3 text-xs font-semibold uppercase tracking-wide text-gray-500">
-                    Page blocks
+                    {{ "plugins.theme-editor.editor.page_blocks" | t: "Page blocks" }}
                   </p>
                   {% for block in orphanBlocks %}
+                    {% assign orphan_block_number = block.index | plus: 1 %}
                     <a href="{{ block.href }}"
                        data-theme-editor-focus
                        data-block="{{ block.index }}"
                        data-section=""
-                       data-label="Block {{ block.index | plus: 1 }}"
+                       data-label="{{ "plugins.theme-editor.editor.block" | t: "Block {number}" | replace: "{number}", orphan_block_number }}"
                        data-type="{{ block.type }}"
                        class="mb-1 block min-w-0 rounded-lg px-3 py-2 text-sm{% if block.selected %} bg-indigo-50 font-semibold text-indigo-700{% else %} text-gray-700 hover:bg-gray-50{% endif %}"
                        {% if block.selected %}aria-current="true"{% endif %}>
                       <span class="block truncate">{{ block.label }}</span>
-                      <span class="block truncate text-xs text-gray-400">{{ block.type }} · block {{ block.index | plus: 1 }} · no template section</span>
+                      <span class="block truncate text-xs text-gray-400">{{ block.type }} · {{ "plugins.theme-editor.editor.block" | t: "block {number}" | replace: "{number}", orphan_block_number }} · {{ "plugins.theme-editor.editor.no_template_section" | t: "no template section" }}</span>
                     </a>
                   {% endfor %}
                 {% endif %}
@@ -325,18 +362,18 @@
 
               <div class="flex items-center justify-between gap-3 border-b border-gray-200 p-3">
                 <div class="min-w-0 flex items-center gap-2 pl-1">
-                  <h3 class="truncate text-sm font-bold text-gray-900"
+                      <h3 class="truncate text-sm font-bold text-gray-900"
                       data-theme-editor-selected-label
                       aria-live="polite"
-                      tabindex="-1">{{ selectedLabel }}</h3>
+                      tabindex="-1">{% if selectedLabelKey != blank %}{{ selectedLabelKey | t: selectedLabel | replace: "{number}", selectedBlockNumber }}{% else %}{{ selectedLabel }}{% endif %}</h3>
                   <span class="shrink-0 rounded bg-indigo-50 px-2 py-0.5 text-xs font-semibold text-indigo-700"
                         data-theme-editor-selected-type
                         {% if selectedType == blank %}hidden{% endif %}>{{ selectedType }}</span>
                 </div>
                 <button type="button"
                         data-theme-editor-close
-                        title="Close settings"
-                        aria-label="Close settings"
+                        title="{{ "plugins.theme-editor.editor.close_settings" | t: "Close settings" }}"
+                        aria-label="{{ "plugins.theme-editor.editor.close_settings" | t: "Close settings" }}"
                         class="inline-flex h-10 w-10 shrink-0 items-center justify-center rounded-lg border border-gray-300 bg-white text-gray-600 hover:bg-gray-50 hover:text-gray-900">
                   <svg class="h-4 w-4" viewBox="0 0 20 20" fill="none" stroke="currentColor" stroke-width="2" aria-hidden="true">
                     <path d="M4 4l12 12M16 4L4 16"></path>
@@ -362,11 +399,11 @@
                      data-theme-editor-mode="values"
                      class="inline-flex h-10 items-center justify-center rounded-lg px-3 text-sm font-semibold{% if schemaMode %} text-gray-700 hover:bg-gray-50{% else %} bg-indigo-50 text-indigo-700{% endif %}"
                      {% if missingBlock %}hidden{% endif %}
-                     {% unless schemaMode %}aria-current="true"{% endunless %}>Values</a>
+                     {% unless schemaMode %}aria-current="true"{% endunless %}>{{ "plugins.theme-editor.editor.values" | t: "Values" }}</a>
                   <a href="{{ schemaModeHref }}"
                      data-theme-editor-mode="schema"
                      class="inline-flex h-10 items-center justify-center rounded-lg px-3 text-sm font-semibold{% if schemaMode %} bg-indigo-50 text-indigo-700{% else %} text-gray-700 hover:bg-gray-50{% endif %}"
-                     {% if schemaMode %}aria-current="true"{% endif %}>Schema</a>
+                     {% if schemaMode %}aria-current="true"{% endif %}>{{ "plugins.theme-editor.editor.schema" | t: "Schema" }}</a>
                   <span class="truncate text-xs text-gray-400"
                         data-theme-editor-schema-name
                         {% unless schemaMode %}hidden{% endunless %}>{{ schemaName }}</span>
@@ -398,9 +435,9 @@
                           {%- if setting.value != blank -%}
                             {{ setting.value }}
                           {%- elsif setting.editable -%}
-                            Empty
+                            {{ "plugins.theme-editor.editor.empty" | t: "Empty" }}
                           {%- else -%}
-                            No stored value backs this setting yet.
+                            {{ "plugins.theme-editor.editor.no_stored_value" | t: "No stored value backs this setting yet." }}
                           {%- endif -%}
                         </span>
                       </label>
@@ -408,12 +445,12 @@
                   </div>
                   {% unless hasSchema %}
                     <p class="rounded-lg bg-gray-50 px-3 py-4 text-sm text-gray-500">
-                      This section declares no {% raw %}{% schema %}{% endraw %} settings.
+                      {{ "plugins.theme-editor.editor.schema_no_settings" | t: "This section has no schema settings." }}
                     </p>
                   {% endunless %}
                   {% if hasSchema and schemaSection == blank %}
                     <p class="mt-3 rounded-lg bg-amber-50 px-3 py-3 text-sm text-amber-700">
-                      No template section binds this block, so there is nothing to save these to.
+                      {{ "plugins.theme-editor.editor.schema_no_binding" | t: "No template section binds this block, so there is nothing to save these to." }}
                     </p>
                   {% endif %}
                 </fieldset>
@@ -423,13 +460,13 @@
                   <div data-theme-editor-fields>
                   {% for group in fieldGroups %}
                     <fieldset class="mb-5 min-w-0">
-                      <legend class="mb-2 text-xs font-semibold uppercase tracking-wide text-gray-500">{{ group.label }}</legend>
+                      <legend class="mb-2 text-xs font-semibold uppercase tracking-wide text-gray-500">{% if group.translationKey != blank %}{{ group.translationKey | t: group.label }}{% else %}{{ group.label }}{% endif %}</legend>
                       <div class="space-y-3">
                         {% for field in group.fields %}
                           <label class="block min-w-0">
                             <span class="mb-1 flex items-center justify-between gap-2 text-sm font-medium text-gray-700">
                               <span class="truncate">{{ field.label }}</span>
-                              <span class="shrink-0 rounded bg-gray-100 px-1.5 py-0.5 text-xs font-medium text-gray-500">{{ field.badge }}</span>
+                              <span class="shrink-0 rounded bg-gray-100 px-1.5 py-0.5 text-xs font-medium text-gray-500">{% if field.badgeKey != blank %}{{ field.badgeKey | t: field.badge }}{% else %}{{ field.badge }}{% endif %}</span>
                             </span>
                             {% if field.multiline %}
                               <textarea name="{{ field.inputName }}" rows="4"
@@ -447,7 +484,7 @@
                     </fieldset>
                   {% endfor %}
                   {% unless hasFields %}
-                    <p class="rounded-lg bg-gray-50 px-3 py-4 text-sm text-gray-500">This selection has no scalar values to edit yet.</p>
+                    <p class="rounded-lg bg-gray-50 px-3 py-4 text-sm text-gray-500">{{ "plugins.theme-editor.editor.no_scalar_values" | t: "This selection has no scalar values to edit yet." }}</p>
                   {% endunless %}
                   </div>
                 </fieldset>
@@ -463,10 +500,10 @@
                   <button type="submit"
                           data-theme-editor-save-button
                           class="inline-flex h-10 w-full items-center justify-center rounded-lg bg-indigo-600 px-4 text-sm font-semibold text-white hover:bg-indigo-700 disabled:cursor-wait disabled:opacity-60">
-                    Save changes
+                    {{ "plugins.theme-editor.editor.save_changes" | t: "Save changes" }}
                   </button>
                 {% else %}
-                  <span class="text-sm text-gray-500">Read-only access</span>
+                  <span class="text-sm text-gray-500">{{ "plugins.theme-editor.editor.read_only" | t: "Read-only access" }}</span>
                 {% endif %}
               </div>
             </form>
@@ -476,8 +513,8 @@
     </div>
   {% else %}
     <div class="rounded-xl border border-amber-200 bg-amber-50 p-6">
-      <h2 class="font-semibold text-amber-900">No readable CMS pages</h2>
-      <p class="mt-2 text-sm text-amber-700">Approve at least one page type for Theme Editor under Plugins → Page types.</p>
+      <h2 class="font-semibold text-amber-900">{{ "plugins.theme-editor.editor.no_pages_title" | t: "No readable CMS pages" }}</h2>
+      <p class="mt-2 text-sm text-amber-700">{{ "plugins.theme-editor.editor.no_pages_description" | t: "Approve at least one page type for Theme Editor under Plugins → Page types." }}</p>
     </div>
   {% endif %}
 </div>

@@ -389,6 +389,11 @@ async function editor(
     + `${activeSection ? `&section=${encodeURIComponent(activeSection.key)}` : ''}`
     + `${selectedBlock === null ? '' : `&block=${selectedBlock}`}`
     + `${mode === 'schema' ? '&settings=schema' : ''}`;
+  const selectedLabelKey = activeSection
+    ? ''
+    : selectedBlock === null
+      ? 'plugins.theme-editor.editor.page_settings'
+      : 'plugins.theme-editor.editor.block';
 
   return adminView(env.VIEWS, 'Theme Editor', 'editor', {
     title: theme.name,
@@ -448,6 +453,8 @@ async function editor(
     selectedSection: activeSection?.key ?? '',
     selectedLabel: activeSection?.label
       ?? (selectedBlock === null ? 'Page settings' : `Block ${selectedBlock + 1}`),
+    selectedLabelKey,
+    selectedBlockNumber: selectedBlock === null ? '' : String(selectedBlock + 1),
     selectedType,
     fieldGroups: groups,
     hasFields: fields.length > 0,
@@ -1428,9 +1435,19 @@ function selectedLanguage(url: URL, languages: string[], fallback: string): stri
   return languages.includes(requested) ? requested : fallback || languages[0] || 'mis';
 }
 
-function fieldGroups<T extends { group: string }>(fields: T[]): Array<{ label: string; fields: T[] }> {
+function fieldGroups<T extends { group: string }>(fields: T[]): Array<{
+  label: string;
+  translationKey?: string;
+  fields: T[];
+}> {
+  const translationKeys: Record<string, string> = {
+    'Page values': 'plugins.theme-editor.editor.group_page_values',
+    'Block settings': 'plugins.theme-editor.editor.group_block_settings',
+    'Page pointers': 'plugins.theme-editor.editor.group_page_pointers',
+  };
   return [...new Set(fields.map((field) => field.group))].map((label) => ({
     label,
+    ...(translationKeys[label] ? { translationKey: translationKeys[label] } : {}),
     fields: fields.filter((field) => field.group === label),
   }));
 }

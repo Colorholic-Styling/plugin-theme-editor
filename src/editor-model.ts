@@ -7,6 +7,7 @@ export interface EditorField {
   value: string;
   kind: 'attribute' | 'localized' | 'pointer' | 'structure';
   badge: string;
+  badgeKey?: string;
   multiline: boolean;
   readOnly: boolean;
   group: string;
@@ -189,6 +190,13 @@ function pushField(
     value,
     kind: input.kind,
     badge: input.badge,
+    badgeKey: input.badge === 'system'
+      ? 'plugins.theme-editor.editor.badge_system'
+      : input.badge === 'pointer'
+        ? 'plugins.theme-editor.editor.badge_pointer'
+        : input.badge === 'attribute'
+          ? 'plugins.theme-editor.editor.badge_attribute'
+          : undefined,
     multiline: MULTILINE_KEY.test(input.key) || value.length > 120 || /<[^>]+>/.test(value),
     readOnly: input.readOnly,
     group: input.group,

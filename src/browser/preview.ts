@@ -74,6 +74,16 @@ function frame(): HTMLIFrameElement | null {
   return document.querySelector('[data-theme-editor-preview]');
 }
 
+function editorCopy(name: string, fallback: string): string {
+  const value = document.querySelector('[data-theme-editor]')?.getAttribute(`data-theme-editor-copy-${name}`);
+  return value || fallback;
+}
+
+function localizeFrameShell(document: Document): void {
+  const status = document.querySelector('[data-theme-preview-status]');
+  if (status) status.textContent = editorCopy('preview-loading', 'Loading preview…');
+}
+
 function bootstrap(): Bootstrap | null {
   const host = frame();
   const dataHref = host?.getAttribute('data-theme-editor-preview-data') || '';
@@ -98,6 +108,7 @@ function frameDocument(host: HTMLIFrameElement): Promise<Document> {
   return new Promise((resolve) => {
     const shell = frameShell(host);
     if (shell) {
+      localizeFrameShell(shell);
       resolve(shell);
       return;
     }
@@ -105,6 +116,7 @@ function frameDocument(host: HTMLIFrameElement): Promise<Document> {
       const loaded = host.contentDocument;
       if (!loaded) return;
       host.removeEventListener('load', onLoad);
+      localizeFrameShell(loaded);
       resolve(loaded);
     };
     host.addEventListener('load', onLoad);
@@ -155,12 +167,17 @@ async function start(): Promise<void> {
       frameDocument(host),
     ]);
   } catch (error) {
-    fail(error instanceof Error ? error.message : 'The preview could not be loaded.');
+    fail(error instanceof Error ? error.message : editorCopy('preview-load-failed', 'The preview could not be loaded.'));
     return;
   }
 
   const runtime: ThemeRuntime = { ...data.runtime, store: new MemoryThemeStore(files) };
-  let context = data.context;
+  let context: ThemeRenderContext = {
+    ...data.context,
+    editorCopy: {
+      editBlock: editorCopy('preview-edit-block', 'Edit {type} block'),
+    },
+  };
   let hidden = new Set(data.hidden);
   let settingOverrides = data.settingOverrides ?? {};
   let structure = data.structure ?? { order: [], added: {}, deleted: [] };
@@ -216,7 +233,7 @@ async function start(): Promise<void> {
   try {
     await render();
   } catch (error) {
-    fail(error instanceof Error ? error.message : 'The preview could not be rendered.');
+    fail(error instanceof Error ? error.message : editorCopy('preview-render-failed', 'The preview could not be rendered.'));
     return;
   }
   // Writing the document replaces what the editor page bound its click and
