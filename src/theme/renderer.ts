@@ -92,7 +92,13 @@ export function themeRuntimeSettings(
     themeId,
     siteTitle: env.THEME_SITE_TITLE || '',
     bookingUrl: env.THEME_BOOKING_URL || '',
-    assetVersion: env.CF_VERSION_METADATA?.id?.slice(0, 8) || 'dev',
+    // A theme's own assets live in the bucket and change whenever the theme is
+    // edited, pushed, or cloned — never on a deploy of this Worker. Stamping
+    // them with the deploy id therefore kept one URL across every edit, so the
+    // preview went on showing the `/assets/site.css` the theme had when the
+    // Worker last deployed. The preview is rendered fresh per request, so a
+    // request-time stamp is what makes an edited stylesheet visible on reload.
+    assetVersion: String(Date.now()),
   };
 }
 

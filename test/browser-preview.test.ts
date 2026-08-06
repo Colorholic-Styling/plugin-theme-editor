@@ -157,6 +157,22 @@ describe('browser preview renderer', () => {
     expect(previewHtml()).toContain('theme-editor-block is-selected');
   });
 
+  it('addresses the page and the theme with a stamp no cache can already hold', async () => {
+    await startPreview();
+
+    const calls = (globalThis.fetch as unknown as {
+      mock: { calls: Array<[string, RequestInit]> };
+    }).mock.calls;
+    expect(calls).toHaveLength(2);
+    for (const [href, init] of calls) {
+      // The theme lives in a bucket that changes on every push, while these
+      // URLs name a theme rather than a version of it — so without this a
+      // cached copy is served as the current theme.
+      expect(new URL(href, 'https://cms.local').searchParams.get('r')).toMatch(/^\d+$/);
+      expect(init.cache).toBe('no-store');
+    }
+  });
+
   it('re-renders edited fields without touching the network', async () => {
     const preview = await startPreview();
     const requestsBefore = (globalThis.fetch as unknown as { mock: { calls: unknown[] } }).mock.calls.length;

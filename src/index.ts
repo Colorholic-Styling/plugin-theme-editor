@@ -18,6 +18,16 @@ import type { PluginEnv } from './types';
 
 const PLUGIN_VIEW_PREFIXES = ['/templates/', '/sections/', '/snippets/', '/locales/'];
 
+/**
+ * No browser reaches these directly: the CMS refetches the bytes on every page
+ * that references them, rehashes them against the admin-approved integrity, and
+ * serves the copy under its own deploy-stamped URL. The SDK default of a day's
+ * public caching therefore buys nothing here and costs correctness — an edge
+ * that held the pre-deploy bytes would either hand the editor a stale renderer
+ * or fail the integrity check outright.
+ */
+const PLUGIN_ASSET_CACHING = { assetsCacheControl: 'no-store' } as const;
+
 export default {
   async fetch(request: Request, baseEnv: PluginEnv): Promise<Response> {
     const url = new URL(request.url);
@@ -41,7 +51,7 @@ export default {
     }
 
     if (path.startsWith('/assets/')) {
-      return serveViewAsset(baseEnv.VIEWS, path);
+      return serveViewAsset(baseEnv.VIEWS, path, PLUGIN_ASSET_CACHING);
     }
 
     if (path.startsWith('/__plugin/views/')) {
@@ -63,7 +73,7 @@ export default {
     }
     if (path.startsWith('/__plugin/admin/assets/')) {
       const assetPath = path.slice('/__plugin/admin'.length);
-      return serveViewAsset(env.VIEWS, assetPath);
+      return serveViewAsset(env.VIEWS, assetPath, PLUGIN_ASSET_CACHING);
     }
     if (path.startsWith('/__plugin/admin/theme/assets/')) {
       return serveThemeAsset(env, url);

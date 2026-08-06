@@ -146,6 +146,16 @@ The first render writes the whole document, so the theme's own `<head>` is
 installed; later renders replace the body alone, keeping the stylesheet from
 being refetched and the scroll position from jumping.
 
+Both requests are stamped with `&r=<timestamp>` and sent `cache: 'no-store'`,
+and so are the theme's own assets — the frame's `<link>` to `site.css`, and the
+`assetVersion` the renderer rewrites theme asset URLs with. Every hop already
+answers `cache-control: no-store` (this Worker, the CMS proxy, the CMS's own
+`/admin` middleware), but these URLs name a *theme* rather than a version of
+one, and the bucket behind them changes on every push, publish, or clone. The
+stamp is what makes that independent of a cache honouring the header — and
+`assetVersion` in particular used to be this Worker's deploy id, which held one
+stylesheet URL across every theme edit between deploys.
+
 ### Editing plain text in the preview
 
 For JSON templates, the preview compiler automatically annotates an existing

@@ -514,13 +514,17 @@ async function editor(
  * the theme into this frame across the same origin.
  */
 function preview(theme: ThemeDefinition): Response {
+  // The frame's URL is stable across loads, so its stylesheet URL would be too
+  // — and the theme behind it changes on every push. This shell is `no-store`
+  // and rendered per request, so the stamp is new each time the frame loads.
+  const revision = Date.now();
   return new Response(`<!doctype html>
 <html>
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>Theme preview</title>
-<link rel="stylesheet" href="${ADMIN_BASE}/theme/assets/site.css?theme=${encodeURIComponent(theme.id)}">
+<link rel="stylesheet" href="${ADMIN_BASE}/theme/assets/site.css?theme=${encodeURIComponent(theme.id)}&amp;r=${revision}">
 <style>.theme-preview-status{margin:0;padding:24px;font:500 14px/1.5 system-ui;color:#6b7280}</style>
 </head>
 <body>
