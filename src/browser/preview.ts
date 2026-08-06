@@ -146,8 +146,26 @@ function fail(message: string): void {
   if (status) status.textContent = message;
 }
 
+/**
+ * The theme's Liquid reaches the browser through these responses and nowhere
+ * else, so a cached copy of one is a preview of a theme that no longer exists.
+ * Their URLs are otherwise identical from load to load — they address a theme,
+ * not a version of it — and the bucket behind them changes on every push, edit,
+ * publish, or clone. Stamping each editor session's requests gives nothing
+ * between here and R2 an earlier answer to give: `cache-control: no-store` at
+ * every hop already asks for that, and this does not depend on being obeyed.
+ */
+function uncached(href: string): string {
+  const url = new URL(href, window.location.href);
+  url.searchParams.set('r', String(Date.now()));
+  return `${url.pathname}${url.search}`;
+}
+
 async function json<T>(href: string): Promise<T> {
-  const response = await fetch(href, { headers: { accept: 'application/json' } });
+  const response = await fetch(uncached(href), {
+    headers: { accept: 'application/json' },
+    cache: 'no-store',
+  });
   if (!response.ok) throw new Error(`${href} responded ${response.status}`);
   return await response.json() as T;
 }
