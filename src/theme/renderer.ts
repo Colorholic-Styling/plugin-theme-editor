@@ -64,7 +64,7 @@ const PREVIEW_STYLE = `<style>
 .theme-editor-block:hover>.theme-editor-select,.theme-editor-select:focus{border-color:#6366f1;outline:0}
 .theme-editor-block:hover>.theme-editor-select span,.theme-editor-select:focus span,.theme-editor-block.is-selected>.theme-editor-select span{opacity:1}
 .theme-editor-block.is-selected>.theme-editor-select{border-color:#4f46e5;box-shadow:inset 0 0 0 2px rgba(255,255,255,.9)}
-[data-theme-editor-field][contenteditable]{position:relative;z-index:1001;cursor:text;outline:2px solid transparent;outline-offset:3px}
+[data-theme-editor-field][contenteditable]{cursor:text;outline:2px solid transparent;outline-offset:3px}
 [data-theme-editor-field][contenteditable]:hover{outline-color:rgba(99,102,241,.55)}
 [data-theme-editor-field][contenteditable]:focus{outline-color:#4f46e5;box-shadow:0 0 0 4px rgba(99,102,241,.16)}
 </style>`;
