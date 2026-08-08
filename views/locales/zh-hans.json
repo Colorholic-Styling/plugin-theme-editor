@@ -51,6 +51,26 @@
         "delete_named": "删除 {name}",
         "empty": "没有可用的主题。"
       },
+      "add": {
+        "title": "添加主题",
+        "description": "准备本地主题用于开发，或将其导入 R2 主题存储桶。",
+        "back": "返回主题",
+        "invalid": "请输入绝对路径，以及只包含小写字母、数字和短横线的主题 ID。",
+        "source_path": "主题绝对路径",
+        "source_placeholder": "/Users/you/code/my-theme",
+        "source_help": "请输入包含 layout、sections、snippets、templates 和 assets 的目录。",
+        "theme_id": "主题 ID",
+        "theme_id_placeholder": "my-theme",
+        "theme_id_help": "使用小写字母、数字和短横线。",
+        "generate": "生成命令",
+        "commands_title": "运行以下命令之一",
+        "commands_description": "浏览器无法直接读取此路径。请在插件目录中运行生成的命令。",
+        "local_title": "本地开发",
+        "local_description": "注册并链接此主题，然后在本地 Worker 运行时监视所有已注册的本地主题。",
+        "r2_title": "R2 存储桶",
+        "r2_description": "将主题上传到按租户划分的 THEMES 存储桶。",
+        "r2_secret_help": "对于多租户 Worker，还需要设置 CMS_TENANT 和已注册的 PLUGIN_SECRET。"
+      },
       "editor": {
         "description": "在开发主题中预览 CMS 页面、选择区块，并编辑其 lect 值。",
         "people_editing": "正在编辑此页面的人员",

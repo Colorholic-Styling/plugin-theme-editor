@@ -43,23 +43,74 @@ loads — so the tests have to take the engine from the same place the browser
 does. It is a one-off, needed again only when the host upgrades its bundle. See
 [In-browser rendering](#in-browser-rendering).
 
-`npm run dev` runs on port `8798` and reads themes from the `THEMES` bucket.
+`npm run dev` runs on port `8798` and reads themes from the `THEMES` bucket. The
+local `dev` scripts explicitly use `CMS_URL` and `PLUGIN_SECRET` from
+`.dev.vars` for admin authentication, so a stale or empty local `TENANTS` KV
+namespace does not need to be prepared first. If you invoke Wrangler directly,
+use `--var THEME_EDITOR_AUTH_MODE:env` as well. Deployed Workers leave this mode
+unset and use the bound `TENANTS` registry for multi-tenant authentication.
+
 To work against a checked-out theme instead, configure its source explicitly:
 
 ```bash
 THEME_SOURCE_DIR=/absolute/path/to/views \
 THEME_ID=example-theme \
+THEME_LINK=1 \
 npm run dev:theme
 ```
 
-`dev:theme` stages the configured directory under ignored `views/theme/`, copies
-it into `.dist/views/theme/`, and then watches the source into that live
-development fallback. A one-off `npm run theme:sync` uses the same required
-`THEME_SOURCE_DIR`. The sync creates a
-`theme-manifest.json` containing the available templates. It copies in place
-and prunes what the source removed, because `wrangler dev` serves the subtree
-live. Production deployment never runs this sync and does not require the
-checked-out theme.
+For example, the Colorholic theme is rooted at the directory that contains
+`layout/`, `sections/`, `snippets/`, `templates/`, and `assets/`:
+
+```bash
+THEME_SOURCE_DIR=/Users/colin/Documents/code/projects/colorholicstyling/www-theme \
+THEME_ID=www-theme \
+THEME_LINK=1 \
+npm run dev:theme
+```
+
+The dashboard's **Add theme** button opens the same setup as a form. Enter the
+absolute checkout path and theme id to generate the local-development and R2
+commands. The browser cannot read a path on your computer, so run the generated
+command from this plugin checkout.
+
+`dev:theme` stages the configured directory under ignored `views/theme/`, puts
+it into `.dist/views/theme/`, passes `THEME_ID` to Wrangler as a local Worker
+variable, and then watches the source into that live development fallback. By
+default it copies files; with `THEME_LINK=1`, the local generated tree contains
+symlinks to the source directories instead, while the generated manifest remains
+local to the plugin checkout. A one-off `npm run theme:sync` uses the same required
+`THEME_SOURCE_DIR`. The sync creates a `theme-manifest.json` containing the
+available templates and copies only the theme contract trees; repository
+metadata, package files, and other checkout material are ignored. It copies in
+place and prunes what the source removed, because `wrangler dev` serves the
+subtree live. Production deployment never runs this sync and does not require
+the checked-out theme.
+
+To preview more than one local checkout at the same time, register each one in
+the ignored `local-themes.json` registry. The Add theme page generates this first
+command for you:
+
+```bash
+THEME_SOURCE_DIR=/absolute/path/to/first-theme \
+THEME_ID=first-theme \
+THEME_LINK=1 \
+npm run theme:add
+
+THEME_SOURCE_DIR=/absolute/path/to/second-theme \
+THEME_ID=second-theme \
+THEME_LINK=1 \
+npm run theme:add
+
+npm run dev:theme
+```
+
+The watcher stages them under `.dist/views/themes/<theme-id>/` and emits a local
+catalog, so the dashboard lists every registered checkout. Each id is independent
+and can be selected in the editor; running `theme:add` again updates that id
+without touching the others. Omit `THEME_LINK=1` to copy instead of symlinking.
+The original `THEME_SOURCE_DIR=... npm run dev:theme` form remains supported for
+a one-theme checkout.
 
 For local single-tenant development:
 
@@ -405,8 +456,41 @@ npm run theme:push
 
 The upload goes through the plugin rather than the R2 API, so the same command
 fills Miniflare's local R2 under `wrangler dev` and a real bucket in
-production. With no bucket bound, the development theme staged under
-`.dist/views/theme/` stands in.
+production. It sends text sources as UTF-8 and images/fonts as base64 bytes,
+and the Worker regenerates `theme-manifest.json` from the files accepted. With
+no bucket bound, the local registry (or the legacy theme staged under
+`.dist/views/theme/`) supplies the available themes.
+
+R2 supports multiple themes automatically: run `theme:push` once per checkout
+with a different `THEME_ID`, or clone/upload more folders through the dashboard.
+The Worker lists the bucket's top-level theme ids and shows them alongside any
+local registry entries; duplicate ids use the bucket copy.
+
+The R2 binding is already declared in `wrangler.toml`:
+
+```toml
+[[r2_buckets]]
+binding = "THEMES"
+bucket_name = "cms-themes"
+```
+
+For a connected tenant, the effective object prefix is
+`t/<tenant-ref>/<theme-id>/`; the tenant prefix is derived from the authenticated
+CMS request and cannot be supplied by an upload caller. A theme can therefore
+be added either by `theme:push`, by the dashboard's GitHub clone flow, or by
+placing the same allowed files under that R2 prefix. The root must contain (or
+the importer will generate) `theme-manifest.json`.
+
+When the plugin is enrolled as a multi-tenant connection, pass the CMS origin
+and the dedicated registration secret used by that connection:
+
+```bash
+CMS_TENANT=http://localhost:8787 \
+PLUGIN_SECRET=<theme-editor-registration-secret> \
+THEME_SOURCE_DIR=/absolute/path/to/views \
+THEME_ID=studio-minimal \
+npm run theme:push
+```
 
 Publishing folds the override layer into the theme's own files:
 

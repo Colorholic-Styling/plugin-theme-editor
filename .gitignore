@@ -2,8 +2,11 @@ node_modules/
 .wrangler/
 .dev.vars
 views/theme/
+views/themes/
+views/theme-catalog.json
 test/vendor/
 .dist/
+local-themes.json
 
 views/assets/theme-preview.js
 *.pem

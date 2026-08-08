@@ -30,17 +30,15 @@ export interface ThemeDefinition {
 /**
  * The bucket is the root of the theme library: every top-level folder is a
  * theme, so publishing one is uploading a folder rather than changing this
- * Worker. Without a bucket the development theme staged under the built asset
- * tree at `.dist/views/theme/`
- * stands in, which is what `npm run dev` uses.
+ * Worker. Local development can stage one legacy theme at `.dist/views/theme/`
+ * or a registry of checkouts at `.dist/views/themes/<id>/`.
  */
 export async function availableThemes(env: PluginEnv): Promise<ThemeDefinition[]> {
-  if (!env.THEMES) return availableDevelopmentTheme(env);
-
-  const ids = await bucketThemeIds(env.THEMES, themeScope(env));
-  if (ids.length === 0) return availableDevelopmentTheme(env);
-
-  const themes = await Promise.all(ids.map(async (id) => {
+  const local = await availableLocalThemes(env);
+  const ids = env.THEMES
+    ? await bucketThemeIds(env.THEMES, themeScope(env))
+    : [];
+  const bucketThemes = await Promise.all(ids.map(async (id) => {
     const meta = await themeMetadata(new R2ThemeStore(env.THEMES as R2Bucket, id, themeScope(env)));
     return {
       id,
@@ -59,13 +57,100 @@ export async function availableThemes(env: PluginEnv): Promise<ThemeDefinition[]
       repo: meta.repo,
     };
   }));
-  return themes;
+
+  // A bucket and local registry are independent sources. R2 wins on a
+  // duplicate id so an explicitly published theme cannot be shadowed by a
+  // stale local checkout. The legacy fallback is retained for empty buckets
+  // and for deployments that have no generated local catalog.
+  if (bucketThemes.length > 0) {
+    const bucketIds = new Set(bucketThemes.map((theme) => theme.id));
+    return [...bucketThemes, ...local.themes.filter((theme) => !bucketIds.has(theme.id))];
+  }
+  if (local.catalogFound) return local.themes;
+  return availableDevelopmentTheme(env);
 }
 
 /** A clean production build contains no local theme, even when its bucket is empty. */
 async function availableDevelopmentTheme(env: PluginEnv): Promise<ThemeDefinition[]> {
   const theme = developmentTheme(env);
   return await themeStore(env, theme).exists('/theme-manifest.json') ? [theme] : [];
+}
+
+/**
+ * The asset binding cannot list directories. `theme:sync` therefore emits a
+ * small catalog beside the generated `themes/<id>` folders. A missing catalog
+ * means the caller is using the backwards-compatible single-theme layout.
+ */
+async function availableLocalThemes(
+  env: PluginEnv,
+): Promise<{ themes: ThemeDefinition[]; catalogFound: boolean }> {
+  const catalog = await readLocalCatalog(env.VIEWS);
+  if (!catalog) return { themes: [], catalogFound: false };
+
+  const themes = await Promise.all(catalog.map(async (entry) => {
+    const theme: ThemeDefinition = {
+      id: entry.id,
+      name: entry.name || humanize(entry.id),
+      description: entry.description || `Local checkout staged under .dist/views/themes/${entry.id}.`,
+      descriptionKey: undefined,
+      source: entry.source || `Local .dist/views/themes/${entry.id}`,
+      status: 'Development',
+      statusKey: 'plugins.theme-editor.themes.status_development',
+      assetPrefix: entry.assetPrefix,
+      storage: 'asset',
+      repo: null,
+    };
+    return await themeStore(env, theme).exists('/theme-manifest.json') ? theme : null;
+  }));
+  return {
+    themes: themes.filter((theme): theme is ThemeDefinition => theme !== null),
+    catalogFound: true,
+  };
+}
+
+interface LocalThemeCatalogEntry {
+  id: string;
+  name?: string;
+  description?: string;
+  assetPrefix: string;
+  source?: string;
+}
+
+async function readLocalCatalog(assets: Fetcher): Promise<LocalThemeCatalogEntry[] | null> {
+  let response: Response;
+  try {
+    response = await assets.fetch('https://views.local/theme-catalog.json');
+  } catch {
+    return null;
+  }
+  if (!response.ok) return null;
+  try {
+    const parsed = await response.json() as unknown;
+    if (!parsed || typeof parsed !== 'object' || !Array.isArray((parsed as { themes?: unknown }).themes)) {
+      return [];
+    }
+    const seen = new Set<string>();
+    return (parsed as { themes: unknown[] }).themes.flatMap((value) => {
+      if (!value || typeof value !== 'object') return [];
+      const entry = value as Record<string, unknown>;
+      const id = typeof entry.id === 'string' ? entry.id : '';
+      const assetPrefix = typeof entry.assetPrefix === 'string' ? entry.assetPrefix : '';
+      if (!/^[a-z0-9][a-z0-9-]*$/.test(id) || id === 't' || seen.has(id)) return [];
+      if (!/^\/theme$|^\/themes\/[a-z0-9][a-z0-9-]*$/.test(assetPrefix)) return [];
+      if (assetPrefix !== '/theme' && assetPrefix !== `/themes/${id}`) return [];
+      seen.add(id);
+      return [{
+        id,
+        assetPrefix,
+        ...(typeof entry.name === 'string' ? { name: entry.name } : {}),
+        ...(typeof entry.description === 'string' ? { description: entry.description } : {}),
+        ...(typeof entry.source === 'string' ? { source: entry.source } : {}),
+      }];
+    });
+  } catch {
+    // A malformed generated catalog should not make every admin route fail.
+    return [];
+  }
 }
 
 export async function themeFromId(

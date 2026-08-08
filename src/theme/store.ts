@@ -1,11 +1,19 @@
+import { themeContentType } from './files';
+
 /**
  * Runtime theme-file contract. Development uses a staged asset subtree; the
  * same interface can later be implemented by an R2 bucket without changing the
- * Liquid renderer or editor routes.
+ * Liquid renderer or editor routes. Binary assets are exposed through the
+ * optional byte capability below so text rendering remains unchanged.
  */
 export interface ThemeStore {
   read(path: string): Promise<string>;
   exists(path: string): Promise<boolean>;
+}
+
+/** Store capability used when serving a theme asset over HTTP. */
+export interface BinaryThemeStore extends ThemeStore {
+  readBytes(path: string): Promise<ArrayBuffer>;
 }
 
 /**
@@ -35,7 +43,7 @@ export function isWritable(store: ThemeStore): store is WritableThemeStore {
  * The env-fallback tenant (a single pre-multi-tenant install) keeps reading
  * and writing unprefixed keys, so its existing themes stay reachable.
  */
-export class R2ThemeStore implements WritableThemeStore {
+export class R2ThemeStore implements WritableThemeStore, BinaryThemeStore {
   private readonly prefix: string;
 
   constructor(
@@ -52,13 +60,26 @@ export class R2ThemeStore implements WritableThemeStore {
     return object.text();
   }
 
+  async readBytes(path: string): Promise<ArrayBuffer> {
+    const object = await this.bucket.get(this.key(path));
+    if (!object) throw new Error(`Theme file not found: ${path}`);
+    if (typeof object.arrayBuffer === 'function') return object.arrayBuffer();
+    return new TextEncoder().encode(await object.text()).buffer;
+  }
+
   async exists(path: string): Promise<boolean> {
     return await this.bucket.head(this.key(path)) !== null;
   }
 
   async write(path: string, content: string): Promise<void> {
     await this.bucket.put(this.key(path), content, {
-      httpMetadata: { contentType: contentTypeFor(path) },
+      httpMetadata: { contentType: themeContentType(path) },
+    });
+  }
+
+  async writeBytes(path: string, content: ArrayBuffer | ArrayBufferView): Promise<void> {
+    await this.bucket.put(this.key(path), content, {
+      httpMetadata: { contentType: themeContentType(path) },
     });
   }
 
@@ -155,10 +176,7 @@ export async function bucketThemeIds(bucket: R2Bucket, scope: ThemeScope = {}): 
 }
 
 export function contentTypeFor(path: string): string {
-  if (path.endsWith('.json')) return 'application/json';
-  if (path.endsWith('.css')) return 'text/css';
-  if (path.endsWith('.js')) return 'text/javascript';
-  return 'text/plain; charset=utf-8';
+  return themeContentType(path);
 }
 
 /**
@@ -166,7 +184,7 @@ export function contentTypeFor(path: string): string {
  * delegates everything else. The preview needs to inject markup into files the
  * theme renders by path, without writing anything into the theme bundle.
  */
-export class VirtualThemeStore implements ThemeStore {
+export class VirtualThemeStore implements ThemeStore, BinaryThemeStore {
   constructor(
     private readonly base: ThemeStore,
     private readonly files: Record<string, string>,
@@ -182,13 +200,25 @@ export class VirtualThemeStore implements ThemeStore {
       ? Promise.resolve(true)
       : this.base.exists(path);
   }
+
+  async readBytes(path: string): Promise<ArrayBuffer> {
+    const virtual = this.files[normalize(path)];
+    if (virtual !== undefined) {
+      return new TextEncoder().encode(virtual).buffer;
+    }
+    const base = this.base as Partial<BinaryThemeStore>;
+    if (typeof base.readBytes !== 'function') {
+      return new TextEncoder().encode(await this.base.read(path)).buffer;
+    }
+    return base.readBytes(path);
+  }
 }
 
 function normalize(path: string): string {
   return path.startsWith('/') ? path : `/${path}`;
 }
 
-export class AssetThemeStore implements ThemeStore {
+export class AssetThemeStore implements ThemeStore, BinaryThemeStore {
   constructor(
     private readonly assets: Fetcher,
     private readonly prefix = '/theme',
@@ -198,6 +228,12 @@ export class AssetThemeStore implements ThemeStore {
     const response = await this.assets.fetch(`https://views.local${this.assetPath(path)}`);
     if (!response.ok) throw new Error(`Theme file not found: ${path}`);
     return response.text();
+  }
+
+  async readBytes(path: string): Promise<ArrayBuffer> {
+    const response = await this.assets.fetch(`https://views.local${this.assetPath(path)}`);
+    if (!response.ok) throw new Error(`Theme file not found: ${path}`);
+    return response.arrayBuffer();
   }
 
   async exists(path: string): Promise<boolean> {

@@ -51,6 +51,26 @@
         "delete_named": "Delete {name}",
         "empty": "No themes are available."
       },
+      "add": {
+        "title": "Add theme",
+        "description": "Prepare a local theme for development or import it into the R2 theme bucket.",
+        "back": "Back to themes",
+        "invalid": "Enter an absolute path and a lowercase theme id using letters, numbers, and dashes.",
+        "source_path": "Absolute theme path",
+        "source_placeholder": "/Users/you/code/my-theme",
+        "source_help": "Use the directory containing layout, sections, snippets, templates, and assets.",
+        "theme_id": "Theme id",
+        "theme_id_placeholder": "my-theme",
+        "theme_id_help": "Lowercase letters, numbers, and dashes.",
+        "generate": "Generate commands",
+        "commands_title": "Run one of these commands",
+        "commands_description": "The browser cannot read the path itself. Run the generated command from the plugin checkout.",
+        "local_title": "Local development",
+        "local_description": "Registers and links this theme, then watches all registered local themes while the Worker runs.",
+        "r2_title": "R2 bucket",
+        "r2_description": "Uploads the theme into the tenant-scoped THEMES bucket.",
+        "r2_secret_help": "For a multi-tenant Worker, also set CMS_TENANT and the registered PLUGIN_SECRET."
+      },
       "editor": {
         "description": "Preview a CMS page in the development theme, select a block, and edit its lect values.",
         "people_editing": "People editing this page",

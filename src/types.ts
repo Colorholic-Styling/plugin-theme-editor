@@ -2,6 +2,8 @@ import type { CmsClientEnv, CmsPage } from '@lionrockjs/worker-cms-plugin';
 
 export interface PluginEnv extends CmsClientEnv {
   TENANTS?: KVNamespace;
+  /** Local dev can force CMS_URL + PLUGIN_SECRET instead of the local KV registry. */
+  THEME_EDITOR_AUTH_MODE?: string;
   /** Optional comma-separated allowlist for automatic tenant enrollment. */
   TENANT_ENROLL_ORIGINS?: string;
   /** Per-template editor overrides; reads degrade to defaults when unbound. */

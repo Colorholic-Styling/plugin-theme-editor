@@ -28,19 +28,48 @@ function views(): Fetcher {
   } as Fetcher;
 }
 
+function catalogViews(
+  catalog: Array<Record<string, string>>,
+  files: Record<string, string>,
+): Fetcher {
+  return {
+    async fetch(input: RequestInfo | URL): Promise<Response> {
+      const url = typeof input === 'string' ? new URL(input) : input instanceof URL ? input : new URL(input.url);
+      if (url.pathname === '/theme-catalog.json') {
+        return Response.json({ themes: catalog });
+      }
+      const body = files[url.pathname];
+      return body === undefined
+        ? new Response('not found', { status: 404 })
+        : new Response(body, { headers: { 'content-type': url.pathname.endsWith('.json') ? 'application/json' : 'text/plain' } });
+    },
+  } as Fetcher;
+}
+
 /**
  * In-memory R2, keyed exactly as the bucket is: `<theme-id>/<path>`. The bucket
  * is the theme root, so a top-level folder is a theme.
  */
-function bucket(seed: Record<string, string> = {}): R2Bucket & { store: Map<string, string> } {
+function bucket(seed: Record<string, string | Uint8Array> = {}): R2Bucket & { store: Map<string, string | Uint8Array> } {
   const store = new Map(Object.entries(seed));
   return {
     store,
-    get: async (key: string) => store.has(key)
-      ? { text: async () => store.get(key) as string }
-      : null,
+    get: async (key: string) => {
+      if (!store.has(key)) return null;
+      const value = store.get(key)!;
+      return {
+        text: async () => typeof value === 'string' ? value : new TextDecoder().decode(value),
+        arrayBuffer: async () => typeof value === 'string'
+          ? new TextEncoder().encode(value).buffer
+          : value.slice().buffer,
+      };
+    },
     head: async (key: string) => store.has(key) ? {} : null,
-    put: async (key: string, value: string) => void store.set(key, value),
+    put: async (key: string, value: string | ArrayBuffer | ArrayBufferView) => {
+      if (typeof value === 'string') store.set(key, value);
+      else if (value instanceof ArrayBuffer) store.set(key, new Uint8Array(value));
+      else store.set(key, new Uint8Array(value.buffer, value.byteOffset, value.byteLength).slice());
+    },
     // R2 accepts one key or a batch; a delete of many is one call.
     delete: async (key: string | string[]) => {
       for (const entry of Array.isArray(key) ? key : [key]) store.delete(entry);
@@ -158,6 +187,33 @@ describe('bucket-backed themes', () => {
     expect(themes.find((theme) => theme.id === 'example-theme')?.name).toBe('Example Theme');
   });
 
+  it('lists multiple local catalog themes beside multiple bucket themes', async () => {
+    const VIEWS = catalogViews(
+      [
+        { id: 'local-one', assetPrefix: '/themes/local-one', name: 'Local One' },
+        { id: 'local-two', assetPrefix: '/themes/local-two', name: 'Local Two' },
+      ],
+      {
+        '/themes/local-one/theme-manifest.json': JSON.stringify({ name: 'Local One' }),
+        '/themes/local-one/templates/page.json': PAGE_TEMPLATE,
+        '/themes/local-one/assets/site.css': 'local-one',
+        '/themes/local-two/theme-manifest.json': JSON.stringify({ name: 'Local Two' }),
+        '/themes/local-two/templates/page.json': PAGE_TEMPLATE,
+        '/themes/local-two/assets/site.css': 'local-two',
+      },
+    );
+    const themes = await availableThemes(env({ VIEWS, THEMES: bucket(themeFiles('remote')) }));
+
+    expect(themes.map((theme) => theme.id)).toEqual(['remote', 'local-one', 'local-two']);
+    const local = themes.find((theme) => theme.id === 'local-two');
+    expect(local).toMatchObject({
+      storage: 'asset',
+      assetPrefix: '/themes/local-two',
+      source: 'Local .dist/views/themes/local-two',
+    });
+    expect(await themeStore(env({ VIEWS }), local!).read('/assets/site.css')).toBe('local-two');
+  });
+
   it('keeps two tenants apart even when their themes share an id', async () => {
     // One bucket serves every connected CMS and R2 has no per-prefix access
     // control, so the key prefix IS the boundary: without it, two tenants that
@@ -252,6 +308,21 @@ describe('bucket-backed themes', () => {
     expect(await response.text()).toBe('body { color: rebeccapurple; }');
   });
 
+  it('serves binary assets without decoding them as UTF-8', async () => {
+    const THEMES = bucket({
+      ...themeFiles('example-theme'),
+      'example-theme/assets/logo.png': new Uint8Array([0, 1, 255, 128]),
+    });
+    const response = await plugin.fetch(
+      adminRequest('/__plugin/admin/theme/assets/logo.png?theme=example-theme'),
+      env({ THEMES }),
+    );
+
+    expect(response.status).toBe(200);
+    expect(response.headers.get('content-type')).toBe('image/png');
+    expect([...new Uint8Array(await response.arrayBuffer())]).toEqual([0, 1, 255, 128]);
+  });
+
   it('uploads a theme folder into the bucket', async () => {
     const THEMES = bucket();
     const response = await plugin.fetch(
@@ -275,6 +346,33 @@ describe('bucket-backed themes', () => {
     });
     expect(THEMES.store.get('studio-minimal/templates/page.json')).toBe(PAGE_TEMPLATE);
     expect([...THEMES.store.keys()].some((key) => key.includes('..'))).toBe(false);
+  });
+
+  it('uploads binary files from a base64 envelope and excludes repository files', async () => {
+    const THEMES = bucket();
+    const response = await plugin.fetch(
+      adminRequest('/__plugin/admin/upload?theme=studio-minimal', {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({
+          '/templates/page.json': PAGE_TEMPLATE,
+          '/assets/logo.png': { encoding: 'base64', content: 'AAH/gA==' },
+          // A legacy plain string is deliberately rejected for binary files;
+          // callers must use the base64 envelope above.
+          '/assets/bad.jpg': 'not-binary-safe',
+          '/.git/config': 'must-not-land',
+          '/package.json': '{}',
+        }),
+      }),
+      env({ THEMES }),
+    );
+    expect(response.status).toBe(200);
+    expect(await response.json()).toMatchObject({ ok: true, written: 2 });
+    expect(THEMES.store.get('studio-minimal/assets/logo.png')).toBeInstanceOf(Uint8Array);
+    expect([...(THEMES.store.get('studio-minimal/assets/logo.png') as Uint8Array)]).toEqual([0, 1, 255, 128]);
+    expect(THEMES.store.has('studio-minimal/assets/bad.jpg')).toBe(false);
+    expect(THEMES.store.has('studio-minimal/.git/config')).toBe(false);
+    expect(THEMES.store.has('studio-minimal/package.json')).toBe(false);
   });
 
   it('publishes overrides into the bucket and clears them', async () => {

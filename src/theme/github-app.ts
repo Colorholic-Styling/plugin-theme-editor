@@ -5,6 +5,7 @@ import {
   type Tenant,
 } from '@lionrockjs/worker-cms-plugin';
 import { ADMIN_BASE, PLUGIN_ID } from '../constants';
+import { tenantAuthEnv } from '../tenant-auth';
 import type { PluginEnv } from '../types';
 import { GitHubError } from './github';
 
@@ -166,7 +167,7 @@ export async function handleGitHubAppCallback(
   const state = await verifyState(url.searchParams.get('state') ?? '', config.stateSecret);
   if (!state) return callbackError('The GitHub connection request is invalid or has expired.', 400);
 
-  const tenant = await tenantById(baseEnv, state.tenantId);
+  const tenant = await tenantById(tenantAuthEnv(baseEnv), state.tenantId);
   if (!tenant) return callbackError('The CMS tenant is no longer connected.', 403);
   const env = tenantClientEnv(baseEnv, tenant) as PluginEnv;
 
