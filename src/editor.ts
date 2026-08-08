@@ -34,6 +34,7 @@ import {
   githubInstallUrl,
 } from './theme/github-app';
 import { deleteBucketTheme, isReservedThemeId, isWritable, R2ThemeStore } from './theme/store';
+import { isBinaryThemePath, isThemeFilePath } from './theme/files';
 
 import {
   allTemplateOverrides,
@@ -79,6 +80,11 @@ export async function handleThemeEditorAdmin(
   if (section === 'themes') {
     if (!access.canView) return forbidden();
     return themesDashboard(env, url, access);
+  }
+
+  if (section === 'add') {
+    if (!access.canEdit) return forbidden();
+    return addThemePage(env, url);
   }
 
   if (section === 'preview') {
@@ -248,6 +254,7 @@ async function themesDashboard(
       canDelete: theme.storage === 'bucket',
     })),
     canEdit: access.canEdit,
+    addThemeHref: `${ADMIN_BASE}/add`,
     hasGitHubToken: access.canEdit && Boolean(env.GITHUB_TOKEN),
     githubAppConfigured: github.configured,
     githubAppConfigurationMessage: github.configurationMessage,
@@ -265,6 +272,48 @@ async function themesDashboard(
     deleteAction: `${ADMIN_BASE}/delete`,
     flash: url.searchParams.get('flash') || '',
   });
+}
+
+/**
+ * The browser can collect a path and theme id, but a Worker cannot read the
+ * browser machine's filesystem. This page turns those values into commands
+ * for the local checkout, keeping the actual import in the CLI where the
+ * files are available. The same values are used for an R2 push.
+ */
+async function addThemePage(env: PluginEnv, url: URL): Promise<Response> {
+  const sourcePath = (url.searchParams.get('source_path') ?? '').trim();
+  const themeId = (url.searchParams.get('theme_id') ?? '').trim();
+  const submitted = url.searchParams.has('source_path') || url.searchParams.has('theme_id');
+  const validPath = sourcePath.startsWith('/') && !/[\r\n]/.test(sourcePath);
+  const validId = /^[a-z0-9][a-z0-9-]*$/.test(themeId) && !isReservedThemeId(themeId);
+  const valid = validPath && validId;
+  const error = submitted && !valid
+    ? 'Enter an absolute path and a lowercase theme id using letters, numbers, and dashes.'
+    : '';
+  const quotedPath = shellQuote(sourcePath);
+  const quotedId = shellQuote(themeId);
+
+  return adminView(env.VIEWS, 'Theme Editor', 'add', {
+    title: 'Add theme',
+    description: 'Prepare a local theme for development or import it into the R2 theme bucket.',
+    action: `${ADMIN_BASE}/add`,
+    backHref: ADMIN_BASE,
+    sourcePath,
+    themeId,
+    submitted,
+    valid,
+    error,
+    localCommand: valid
+      ? `THEME_SOURCE_DIR=${quotedPath} \\\nTHEME_ID=${quotedId} \\\nTHEME_LINK=1 \\\nnpm run theme:add && npm run dev:theme`
+      : '',
+    pushCommand: valid
+      ? `THEME_SOURCE_DIR=${quotedPath} \\\nTHEME_ID=${quotedId} \\\nnpm run theme:push`
+      : '',
+  });
+}
+
+function shellQuote(value: string): string {
+  return `'${value.replace(/'/g, "'\\''")}'`;
 }
 
 async function editor(
@@ -952,13 +1001,19 @@ async function cloneThemeFromGitHub(request: Request, env: PluginEnv): Promise<R
     }
 
     const store = new R2ThemeStore(env.THEMES as R2Bucket, themeId, themeScope(env));
-    for (const file of files) await store.write(file.path, file.content);
+    for (const file of files) {
+      if (typeof file.content === 'string') await store.write(file.path, file.content);
+      else await store.writeBytes(file.path, file.content);
+    }
     // A theme repository has no manifest — it is a build product — so one is
     // generated from what arrived. Without it the theme lands with no
     // templates at all. The repo goes in too, so pushing needs no second setup.
     await store.write('/theme-manifest.json', buildThemeManifest(
       files.map((file) => file.path),
-      { ...themeMetaFrom(files.find((file) => file.path === '/theme-manifest.json')?.content), repo },
+      {
+        ...themeMetaFrom(files.find((file) => file.path === '/theme-manifest.json')?.content),
+        repo,
+      },
     ));
     return githubResult(request, true,
       `Cloned ${files.length} files from ${repo.owner}/${repo.repo}@${repo.branch} into ${themeId}.`);
@@ -1117,7 +1172,8 @@ function githubResult(request: Request, ok: boolean, message: string): Response 
 }
 
 /** A theme's own naming, when its repository happens to carry a manifest. */
-function themeMetaFrom(existing: string | undefined): Record<string, unknown> {
+function themeMetaFrom(existing: string | Uint8Array | undefined): Record<string, unknown> {
+  if (typeof existing !== 'string') return {};
   try {
     const parsed = JSON.parse(existing ?? '{}') as unknown;
     if (!isRecord(parsed)) return {};
@@ -1150,20 +1206,64 @@ async function uploadTheme(request: Request, env: PluginEnv, url: URL): Promise<
 
   const store = new R2ThemeStore(env.THEMES, themeId, themeScope(env));
   const written: string[] = [];
+  let manifestMeta: Record<string, unknown> = {};
   for (const [path, source] of Object.entries(files)) {
-    // Paths come from an upload, so they decide bucket keys: keep traversal
-    // and anything but a theme file out of them.
-    if (typeof source !== 'string') continue;
-    if (!/^\/[a-z0-9][a-z0-9./_-]*$/i.test(path) || path.includes('..')) continue;
-    await store.write(path, source);
+    // Paths come from an upload, so they decide bucket keys: keep traversal,
+    // repository metadata, and anything outside the theme contract out of
+    // them. Binary files use the explicit base64 envelope below; accepting a
+    // JSON string for an image would silently corrupt it.
+    if (!isThemeFilePath(path)) continue;
+    const decoded = decodeUploadedThemeFile(source, path);
+    if (!decoded) continue;
+    if (path === '/theme-manifest.json' && decoded.encoding === 'utf8') {
+      manifestMeta = themeMetaFrom(decoded.content);
+    }
+    if (decoded.encoding === 'base64') {
+      await store.writeBytes(path, decoded.bytes);
+    } else {
+      await store.write(path, decoded.content);
+    }
     written.push(path);
   }
   // Regenerated from what actually landed, so an upload missing the manifest —
-  // or carrying a stale one — still yields a usable theme.
-  if (written.length > 0 && !written.includes('/theme-manifest.json')) {
-    await store.write('/theme-manifest.json', buildThemeManifest(written));
+  // or carrying a stale one — still yields a usable theme. Authored metadata
+  // such as name/description survives, while templates/files always reflect
+  // the accepted upload paths.
+  if (written.length > 0) {
+    await store.write('/theme-manifest.json', buildThemeManifest(written, manifestMeta));
   }
   return Response.json({ ok: true, theme: themeId, written: written.length, paths: written.sort() });
+}
+
+type UploadedThemeFile =
+  | string
+  | { encoding?: unknown; content?: unknown };
+
+function decodeUploadedThemeFile(value: unknown, path: string):
+  | { encoding: 'utf8'; content: string }
+  | { encoding: 'base64'; bytes: ArrayBuffer }
+  | null {
+  // Keep the legacy string form for text files, but never let a binary asset
+  // be silently re-encoded as UTF-8. Binary uploads must use the explicit
+  // base64 envelope so the original bytes survive the JSON transport.
+  if (typeof value === 'string') {
+    return isBinaryThemePath(path) ? null : { encoding: 'utf8', content: value };
+  }
+  if (!isRecord(value)) return null;
+  const file = value as UploadedThemeFile & Record<string, unknown>;
+  if (file.encoding === 'utf8' && typeof file.content === 'string') {
+    return { encoding: 'utf8', content: file.content };
+  }
+  if (file.encoding === 'base64' && typeof file.content === 'string') {
+    try {
+      const binary = atob(file.content.replace(/\s/g, ''));
+      const bytes = Uint8Array.from(binary, (character) => character.charCodeAt(0));
+      return { encoding: 'base64', bytes: bytes.buffer };
+    } catch {
+      return null;
+    }
+  }
+  return null;
 }
 
 async function publishTheme(request: Request, env: PluginEnv): Promise<Response> {

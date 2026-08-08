@@ -6,6 +6,8 @@ const projectRoot = resolve(fileURLToPath(new URL('..', import.meta.url)));
 const source = resolve(projectRoot, 'views');
 const destination = resolve(projectRoot, '.dist/views');
 const developmentTheme = resolve(source, 'theme');
+const developmentThemes = resolve(source, 'themes');
+const themeCatalog = resolve(source, 'theme-catalog.json');
 const includeDevelopmentTheme = process.env.INCLUDE_DEV_THEME === '1';
 
 // Build from a clean directory so ignored development theme files cannot leak
@@ -17,7 +19,11 @@ await cp(source, destination, {
   force: true,
   filter: (path) => includeDevelopmentTheme
     || path === source
-    || !path.startsWith(developmentTheme),
+    || (path !== themeCatalog
+      && !path.startsWith(`${developmentTheme}/`)
+      && path !== developmentTheme
+      && !path.startsWith(`${developmentThemes}/`)
+      && path !== developmentThemes),
 });
 
 process.stdout.write(`Plugin assets prepared in ${destination}\n`);

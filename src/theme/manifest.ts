@@ -18,7 +18,7 @@ export function buildThemeManifest(
   paths: string[],
   extra: Record<string, unknown> = {},
 ): string {
-  const files = [...new Set(paths.filter((path) => /\.(liquid|json)$/.test(path)))]
+  const files = [...new Set(paths.filter((path) => /\.(liquid|json)$/i.test(path)))]
     .filter((path) => path !== '/theme-manifest.json')
     .sort();
 

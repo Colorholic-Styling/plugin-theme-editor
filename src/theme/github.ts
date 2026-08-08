@@ -4,6 +4,8 @@
  * read a tree to clone, then blobs → tree → commit → move the ref to push.
  * That also makes a push atomic, which a file-at-a-time API would not be.
  */
+import { isBinaryThemePath, isThemeFilePath } from './files';
+
 export interface GitHubRepo {
   owner: string;
   repo: string;
@@ -15,7 +17,8 @@ export interface GitHubRepo {
 export interface GitHubFile {
   /** Store path, e.g. `/templates/page.json`. */
   path: string;
-  content: string;
+  /** Text for Liquid/JSON sources, bytes for images/fonts and other assets. */
+  content: string | Uint8Array;
 }
 
 export class GitHubError extends Error {
@@ -26,9 +29,6 @@ export class GitHubError extends Error {
 }
 
 const API = 'https://api.github.com';
-
-/** Theme files GitHub is allowed to bring in, matching what the renderer reads. */
-const THEME_FILE = /\.(liquid|json|css|js|svg|png|jpe?g|webp|woff2?)$/i;
 
 export class GitHubClient {
   constructor(private readonly token: string) {}
@@ -126,16 +126,22 @@ export class GitHubClient {
     }
 
     const prefix = repo.path ? `${repo.path.replace(/^\/+|\/+$/g, '')}/` : '';
-    const wanted = tree.tree.filter((entry) =>
-      entry.type === 'blob' && entry.path.startsWith(prefix) && THEME_FILE.test(entry.path));
+    const wanted = tree.tree.filter((entry) => {
+      if (entry.type !== 'blob' || !entry.path.startsWith(prefix)) return false;
+      const path = `/${entry.path.slice(prefix.length)}`;
+      return isThemeFilePath(path);
+    });
 
     return Promise.all(wanted.map(async (entry) => {
       const blob = await this.call<{ content: string; encoding: string }>(
         `/repos/${repo.owner}/${repo.repo}/git/blobs/${entry.sha}`,
       );
+      const path = `/${entry.path.slice(prefix.length)}`;
       return {
-        path: `/${entry.path.slice(prefix.length)}`,
-        content: blob.encoding === 'base64' ? decodeBase64(blob.content) : blob.content,
+        path,
+        content: blob.encoding === 'base64' && isBinaryThemePath(path)
+          ? decodeBase64Bytes(blob.content)
+          : blob.encoding === 'base64' ? decodeBase64Text(blob.content) : blob.content,
       };
     }));
   }
@@ -163,7 +169,7 @@ export class GitHubClient {
         `/repos/${repo.owner}/${repo.repo}/git/blobs`,
         {
           method: 'POST',
-          body: JSON.stringify({ content: file.content, encoding: 'utf-8' }),
+          body: JSON.stringify(encodeGitHubBlob(file.content)),
         },
       );
       return {
@@ -229,8 +235,20 @@ export function repoFromFullName(value: string): Pick<GitHubRepo, 'owner' | 'rep
   return match ? { owner: match[1], repo: match[2] } : null;
 }
 
-function decodeBase64(value: string): string {
+function encodeGitHubBlob(content: string | Uint8Array): { content: string; encoding: 'utf-8' | 'base64' } {
+  if (typeof content === 'string') return { content, encoding: 'utf-8' };
+  let binary = '';
+  for (const byte of content) binary += String.fromCharCode(byte);
+  return { content: btoa(binary), encoding: 'base64' };
+}
+
+function decodeBase64Text(value: string): string {
   const binary = atob(value.replace(/\s/g, ''));
   const bytes = Uint8Array.from(binary, (character) => character.charCodeAt(0));
   return new TextDecoder().decode(bytes);
+}
+
+function decodeBase64Bytes(value: string): Uint8Array {
+  const binary = atob(value.replace(/\s/g, ''));
+  return Uint8Array.from(binary, (character) => character.charCodeAt(0));
 }

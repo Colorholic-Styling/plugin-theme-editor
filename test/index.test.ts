@@ -254,6 +254,11 @@ async function renderThemesSection(data: Record<string, unknown>): Promise<strin
   return String(await testLiquid({ outputEscape: 'escape' }).parseAndRender(source, data));
 }
 
+async function renderAddSection(data: Record<string, unknown>): Promise<string> {
+  const source = await readFile(fileURLToPath(new URL('../views/sections/add.liquid', import.meta.url)), 'utf8');
+  return String(await testLiquid({ outputEscape: 'escape' }).parseAndRender(source, data));
+}
+
 afterEach(() => {
   vi.unstubAllGlobals();
   clearTenantCache();
@@ -418,6 +423,30 @@ describe('plugin contract', () => {
     );
     expect(response.status).toBe(403);
   });
+
+  it('lets local env credentials win over a leftover tenant registry record', async () => {
+    const tenants = tenantKv();
+    await tenants.put(`tenant:${CMS_ORIGIN}`, JSON.stringify({
+      cmsUrl: CMS_ORIGIN,
+      secret: 'old-local-kv-secret',
+    }));
+    const request = new Request('https://plugin.example.com/__plugin/admin/views/templates/themes.json', {
+      headers: {
+        'x-cms-tenant': CMS_ORIGIN,
+        'x-plugin-secret': SECRET,
+        'x-cms-user': JSON.stringify({ id: '42', role: 'editor' }),
+      },
+    });
+
+    const registryResponse = await plugin.fetch(request, env({ TENANTS: tenants }));
+    expect(registryResponse.status).toBe(403);
+
+    const localResponse = await plugin.fetch(request, env({
+      TENANTS: tenants,
+      THEME_EDITOR_AUTH_MODE: 'env',
+    }));
+    expect(localResponse.status).toBe(200);
+  });
 });
 
 describe('editor model', () => {
@@ -571,6 +600,7 @@ describe('theme editor routes', () => {
     expect(response.headers.get('x-cms-view-path')).toBe('/templates/themes.json');
     const data = await response.json() as {
       title: string;
+      addThemeHref: string;
       themes: Array<{
         id: string;
         name: string;
@@ -578,6 +608,7 @@ describe('theme editor routes', () => {
       }>;
     };
     expect(data.title).toBe('Themes');
+    expect(data.addThemeHref).toBe('/admin/plugins/theme-editor/add');
     expect(data.themes).toEqual([
       expect.objectContaining({
         id: 'example-theme',
@@ -588,10 +619,56 @@ describe('theme editor routes', () => {
     const html = await renderThemesSection(data as unknown as Record<string, unknown>);
     expect(html).toContain('Development theme');
     expect(html).toContain('Local .dist/views/theme');
+    expect(html).toContain('href="/admin/plugins/theme-editor/add"');
     expect(html).toContain('Edit theme');
     // An asset-bundle theme belongs to a deploy, so the editor offers no way
     // to remove it.
     expect(html).not.toContain('Delete theme');
+  });
+
+  it('opens the add-theme page and generates local and R2 commands', async () => {
+    const response = await plugin.fetch(
+      adminRequest('/__plugin/admin/add?source_path=%2FUsers%2Fcolin%2FDocuments%2Fcode%2Fprojects%2Fcolorholicstyling%2Fwww-theme&theme_id=www-theme'),
+      env(),
+    );
+
+    expect(response.status).toBe(200);
+    expect(response.headers.get('x-cms-view-path')).toBe('/templates/add.json');
+    const data = await response.json() as Record<string, unknown>;
+    expect(data.title).toBe('Add theme');
+    expect(data.valid).toBe(true);
+    expect(data.localCommand).toContain("THEME_SOURCE_DIR='/Users/colin/Documents/code/projects/colorholicstyling/www-theme'");
+    expect(data.localCommand).toContain("THEME_ID='www-theme'");
+    expect(data.localCommand).toContain('THEME_LINK=1');
+    expect(data.localCommand).toContain('npm run theme:add');
+    expect(data.localCommand).toContain('npm run dev:theme');
+    expect(data.pushCommand).toContain('npm run theme:push');
+
+    const html = await renderAddSection(data);
+    expect(html).toContain('name="source_path"');
+    expect(html).toContain('www-theme');
+    expect(html).toContain('npm run theme:push');
+  });
+
+  it('rejects relative paths and invalid ids on the add-theme page', async () => {
+    const response = await plugin.fetch(
+      adminRequest('/__plugin/admin/add?source_path=./www-theme&theme_id=Theme_Editor'),
+      env(),
+    );
+
+    expect(response.status).toBe(200);
+    const data = await response.json() as Record<string, unknown>;
+    expect(data.valid).toBe(false);
+    expect(data.error).toBeTruthy();
+    expect(data.localCommand).toBe('');
+    expect(data.pushCommand).toBe('');
+
+    const reserved = await plugin.fetch(
+      adminRequest('/__plugin/admin/add?source_path=%2FUsers%2Fcolin%2Ftheme&theme_id=t'),
+      env(),
+    );
+    const reservedData = await reserved.json() as Record<string, unknown>;
+    expect(reservedData.valid).toBe(false);
   });
 
   it('offers deleting a bucket theme behind a typed confirmation', async () => {

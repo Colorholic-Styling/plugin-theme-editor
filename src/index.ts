@@ -12,7 +12,9 @@ import {
   GITHUB_CALLBACK_PATH,
   handleGitHubAppCallback,
 } from './theme/github-app';
-import { contentTypeFor } from './theme/store';
+import { contentTypeFor, type BinaryThemeStore } from './theme/store';
+import { isThemeFilePath } from './theme/files';
+import { tenantAuthEnv } from './tenant-auth';
 import { themeFromId, themeStore } from './themes';
 import type { PluginEnv } from './types';
 
@@ -63,7 +65,7 @@ export default {
       return new Response('not found', { status: 404 });
     }
 
-    const tenant = await requireTenant(request, baseEnv);
+    const tenant = await requireTenant(request, tenantAuthEnv(baseEnv));
     if (tenant instanceof Response) return tenant;
     const env = tenantClientEnv(baseEnv, tenant);
 
@@ -115,8 +117,14 @@ async function serveThemeAsset(env: PluginEnv, url: URL): Promise<Response> {
   if (!theme) return new Response('Theme not found.', { status: 404 });
 
   const assetPath = `/assets/${filename}`;
+  if (!isThemeFilePath(assetPath)) return new Response('not found', { status: 404 });
   try {
-    return new Response(await themeStore(env, theme).read(assetPath), {
+    const store = themeStore(env, theme);
+    const bytes = (store as Partial<BinaryThemeStore>).readBytes;
+    const body = typeof bytes === 'function'
+      ? await bytes.call(store, assetPath)
+      : await store.read(assetPath);
+    return new Response(body, {
       headers: {
         'content-type': contentTypeFor(assetPath),
         'cache-control': 'no-store',

@@ -51,6 +51,26 @@
         "delete_named": "刪除 {name}",
         "empty": "沒有可用的主題。"
       },
+      "add": {
+        "title": "新增主題",
+        "description": "準備本機主題以供開發，或將其匯入 R2 主題儲存桶。",
+        "back": "返回主題",
+        "invalid": "請輸入絕對路徑，以及只包含小寫字母、數字和連字號的主題 ID。",
+        "source_path": "主題絕對路徑",
+        "source_placeholder": "/Users/you/code/my-theme",
+        "source_help": "請輸入包含 layout、sections、snippets、templates 和 assets 的目錄。",
+        "theme_id": "主題 ID",
+        "theme_id_placeholder": "my-theme",
+        "theme_id_help": "使用小寫字母、數字和連字號。",
+        "generate": "產生指令",
+        "commands_title": "執行以下其中一個指令",
+        "commands_description": "瀏覽器無法直接讀取此路徑。請在外掛程式目錄中執行產生的指令。",
+        "local_title": "本機開發",
+        "local_description": "註冊並連結此主題，然後在本機 Worker 執行時監視所有已註冊的本地主題。",
+        "r2_title": "R2 儲存桶",
+        "r2_description": "將主題上傳至按租戶劃分的 THEMES 儲存桶。",
+        "r2_secret_help": "對於多租戶 Worker，還需要設定 CMS_TENANT 和已註冊的 PLUGIN_SECRET。"
+      },
       "editor": {
         "description": "在開發主題中預覽 CMS 頁面、選擇區塊，並編輯其 lect 值。",
         "people_editing": "正在編輯此頁面的人員",

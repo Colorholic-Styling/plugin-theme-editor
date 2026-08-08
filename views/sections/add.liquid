@@ -1,0 +1,62 @@
+<div class="px-4 py-5 sm:px-6 sm:py-8 lg:px-8">
+  <div class="mb-4 flex items-center justify-between gap-4">
+    <div>
+      <h1 class="text-2xl font-bold text-gray-900">{{ "plugins.theme-editor.add.title" | t: title }}</h1>
+      <p class="mt-1 text-sm text-gray-500">{{ "plugins.theme-editor.add.description" | t: description }}</p>
+    </div>
+    <a href="{{ backHref }}"
+       class="inline-flex h-10 items-center justify-center rounded-lg border border-gray-300 bg-white px-4 text-sm font-semibold text-gray-700 hover:bg-gray-50">
+      {{ "plugins.theme-editor.add.back" | t: "Back to themes" }}
+    </a>
+  </div>
+
+  {% if error != blank %}
+    <p class="mb-4 rounded-lg border border-red-200 bg-red-50 px-4 py-3 text-sm text-red-700">{{ "plugins.theme-editor.add.invalid" | t: error }}</p>
+  {% endif %}
+
+  <section class="rounded-xl border border-gray-200 bg-white p-4 shadow-sm sm:p-6">
+    <form method="get" action="{{ action }}" class="grid grid-cols-1 gap-4 sm:grid-cols-2">
+      <label class="min-w-0 sm:col-span-2">
+        <span class="mb-1 block text-sm font-medium text-gray-700">{{ "plugins.theme-editor.add.source_path" | t: "Absolute theme path" }}</span>
+        <input name="source_path" value="{{ sourcePath }}" required autocomplete="off"
+               placeholder="{{ "plugins.theme-editor.add.source_placeholder" | t: "/Users/you/code/my-theme" }}"
+               class="block h-10 w-full rounded-lg border border-gray-300 px-3 text-sm focus:border-transparent focus:outline-none focus:ring-2 focus:ring-indigo-500">
+        <span class="mt-1 block text-xs text-gray-500">{{ "plugins.theme-editor.add.source_help" | t: "Use the directory containing layout, sections, snippets, templates, and assets." }}</span>
+      </label>
+      <label class="min-w-0">
+        <span class="mb-1 block text-sm font-medium text-gray-700">{{ "plugins.theme-editor.add.theme_id" | t: "Theme id" }}</span>
+        <input name="theme_id" value="{{ themeId }}" required pattern="[a-z0-9][a-z0-9-]*" autocomplete="off"
+               placeholder="{{ "plugins.theme-editor.add.theme_id_placeholder" | t: "my-theme" }}"
+               class="block h-10 w-full rounded-lg border border-gray-300 px-3 text-sm focus:border-transparent focus:outline-none focus:ring-2 focus:ring-indigo-500">
+        <span class="mt-1 block text-xs text-gray-500">{{ "plugins.theme-editor.add.theme_id_help" | t: "Lowercase letters, numbers, and dashes." }}</span>
+      </label>
+      <div class="flex items-end">
+        <button type="submit"
+                class="inline-flex h-10 w-full items-center justify-center rounded-lg bg-indigo-600 px-4 text-sm font-semibold text-white hover:bg-indigo-700 sm:w-auto">
+          {{ "plugins.theme-editor.add.generate" | t: "Generate commands" }}
+        </button>
+      </div>
+    </form>
+  </section>
+
+  {% if valid %}
+    <section class="mt-4 rounded-xl border border-gray-200 bg-white p-4 shadow-sm sm:p-6">
+      <h2 class="text-lg font-bold text-gray-900">{{ "plugins.theme-editor.add.commands_title" | t: "Run one of these commands" }}</h2>
+      <p class="mt-1 text-sm text-gray-500">{{ "plugins.theme-editor.add.commands_description" | t: "The browser cannot read the path itself. Run the generated command from the plugin checkout." }}</p>
+
+      <div class="mt-4 grid grid-cols-1 gap-4 sm:grid-cols-2">
+        <div>
+          <h3 class="text-sm font-semibold text-gray-900">{{ "plugins.theme-editor.add.local_title" | t: "Local development" }}</h3>
+          <p class="mt-1 text-sm text-gray-600">{{ "plugins.theme-editor.add.local_description" | t: "Registers and links this theme, then watches all registered local themes while the Worker runs." }}</p>
+          <pre class="mt-3 overflow-x-auto rounded-lg bg-gray-900 px-3 py-2 text-xs leading-relaxed text-white"><code>{{ localCommand }}</code></pre>
+        </div>
+        <div>
+          <h3 class="text-sm font-semibold text-gray-900">{{ "plugins.theme-editor.add.r2_title" | t: "R2 bucket" }}</h3>
+          <p class="mt-1 text-sm text-gray-600">{{ "plugins.theme-editor.add.r2_description" | t: "Uploads the theme into the tenant-scoped THEMES bucket." }}</p>
+          <pre class="mt-3 overflow-x-auto rounded-lg bg-gray-900 px-3 py-2 text-xs leading-relaxed text-white"><code>{{ pushCommand }}</code></pre>
+          <p class="mt-2 text-xs text-gray-500">{{ "plugins.theme-editor.add.r2_secret_help" | t: "For a multi-tenant Worker, also set CMS_TENANT and the registered PLUGIN_SECRET." }}</p>
+        </div>
+      </div>
+    </section>
+  {% endif %}
+</div>
