@@ -308,6 +308,25 @@ describe('bucket-backed themes', () => {
     expect(await response.text()).toBe('body { color: rebeccapurple; }');
   });
 
+  it('includes newly uploaded Liquid files when the manifest is stale', async () => {
+    const THEMES = bucket({
+      ...themeFiles('example-theme'),
+      // Simulate a checkout push that added a partial but did not regenerate
+      // the manifest left by an earlier plugin upload.
+      'example-theme/snippets/price-row.liquid': '<li class="price-row">{{ service.name }}</li>',
+    });
+
+    const response = await plugin.fetch(
+      adminRequest('/__plugin/admin/preview/bundle?theme=example-theme'),
+      env({ THEMES }),
+    );
+
+    expect(response.status).toBe(200);
+    const bundle = await response.json() as Record<string, string>;
+    expect(bundle['/snippets/price-row.liquid']).toContain('price-row');
+    expect(bundle['/theme-manifest.json']).toBeUndefined();
+  });
+
   it('serves binary assets without decoding them as UTF-8', async () => {
     const THEMES = bucket({
       ...themeFiles('example-theme'),
