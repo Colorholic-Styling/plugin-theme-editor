@@ -51,6 +51,7 @@ function previewData(overrides: Record<string, unknown> = {}) {
       settings: null,
       pages: [],
       news: [],
+      pagesByType: {},
       language: 'en',
       languages: ['en', 'zh-hant'],
       defaultLanguage: 'en',

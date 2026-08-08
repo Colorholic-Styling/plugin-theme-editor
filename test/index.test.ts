@@ -6,11 +6,21 @@ import { cmsState, themeOverridesKey } from './cms-state';
 import { testLiquid } from './host-liquid';
 import worker from '../src/index';
 import { applyEditorFields, editorFields } from '../src/editor-model';
-import { previewThemeStore, renderThemePreview, themeRuntime } from '../src/theme/renderer';
-import { AssetThemeStore } from '../src/theme/store';
-import { selectThemeTemplate, themeTemplates } from '../src/theme/templates';
+import {
+  previewThemeStore,
+  renderThemePreview,
+  resolveThemeBinding,
+  themeRuntime,
+} from '../src/theme/renderer';
+import { AssetThemeStore, type ThemeStore } from '../src/theme/store';
+import {
+  selectThemeTemplate,
+  templatePageTypeResources,
+  themeTemplates,
+  type ThemeTemplate,
+} from '../src/theme/templates';
 import { availableThemes } from '../src/themes';
-import type { PluginEnv } from '../src/types';
+import type { PluginEnv, ThemePageResourceCollection } from '../src/types';
 
 const SECRET = 'theme-editor-test-secret';
 const plugin = worker as { fetch(request: Request, env: PluginEnv): Promise<Response> };
@@ -75,6 +85,7 @@ async function renderPreview(
     selectedBlock?: number | null;
     hidden?: string[];
     news?: CmsPage[];
+    pagesByType?: Record<string, ThemePageResourceCollection>;
     settingOverrides?: Record<string, Record<string, string>>;
     structure?: {
       order: string[];
@@ -95,6 +106,7 @@ async function renderPreview(
     settings: null,
     pages: [fixture],
     news: options.news ?? [],
+    pagesByType: options.pagesByType ?? {},
     language: 'en',
     languages: ['en', 'zh-hant'],
     defaultLanguage: 'en',
@@ -442,6 +454,108 @@ describe('editor model', () => {
     expect((block.title as Record<string, unknown>).en).toBe('Updated title');
     expect(block._type).toBe('hero');
     expect(({} as Record<string, unknown>).polluted).toBeUndefined();
+  });
+});
+
+describe('template page resources', () => {
+  const template: ThemeTemplate = {
+    id: 'resource-page',
+    label: 'Resource page',
+    path: '/templates/resource-page.json',
+    format: 'json',
+  };
+
+  function resourceStore(definition: unknown): ThemeStore {
+    return {
+      read: async () => JSON.stringify(definition),
+      exists: async () => true,
+    };
+  }
+
+  it('turns pages_by_type declarations into one bounded query plan', async () => {
+    await expect(templatePageTypeResources(template, resourceStore({
+      resources: {
+        pages_by_type: {
+          service: { limit: 60, sort: 'weight', order: 'asc' },
+          team_member: {
+            limit: 40,
+            sort: 'name',
+            order: 'asc',
+            group_by: { tag_taxonomy: 'categories', include_untagged: true },
+          },
+          news: { limit: 6, sort: 'published_at', order: 'desc' },
+        },
+      },
+    }))).resolves.toEqual([
+      { key: 'service', page_type: 'service', limit: 60, sort: 'weight', order: 'asc' },
+      {
+        key: 'team_member', page_type: 'team_member', limit: 40, sort: 'name', order: 'asc',
+        group_by: { tag_taxonomy: 'categories', include_untagged: true },
+      },
+      { key: 'news', page_type: 'news', limit: 6, sort: 'published_at', order: 'desc' },
+    ]);
+  });
+
+  it('rejects unsafe, unbounded, and unknown query values', async () => {
+    await expect(templatePageTypeResources(template, resourceStore({
+      resources: {
+        pages_by_type: {
+          '../service': { limit: 60, sort: 'weight', order: 'asc' },
+        },
+      },
+    }))).rejects.toThrow('Invalid pages_by_type resource');
+
+    await expect(templatePageTypeResources(template, resourceStore({
+      resources: {
+        pages_by_type: {
+          service: { limit: 501, sort: 'random()', order: 'sideways' },
+        },
+      },
+    }))).rejects.toThrow('Invalid pages_by_type resource');
+  });
+
+  it('projects resource pages and localized tag groups into Liquid', async () => {
+    const fixture = page();
+    const service = page({
+      id: 31,
+      page_type: 'service',
+      name: 'Personal colour',
+      slug: 'personal-colour',
+      lect: { title: { en: 'Personal colour consultation' } },
+    });
+    const runtime = themeRuntime(env(), resourceStore({}), 'resource-theme');
+    const html = await resolveThemeBinding(runtime, {
+      page: fixture,
+      settings: null,
+      pages: [fixture],
+      news: [],
+      pagesByType: {
+        service: {
+          pages: [service],
+          groups: [{
+            tag: {
+              id: 7,
+              slug: 'colour',
+              name: 'Colour',
+              weight: 10,
+              taxonomy_slug: 'categories',
+              parent_tag: null,
+              created_at: '2026-01-01',
+              updated_at: '2026-01-01',
+              lect: { name: { en: 'Colour analysis' } },
+            },
+            pages: [service],
+          }],
+        },
+      },
+      language: 'en',
+      languages: ['en', 'zh-hant'],
+      defaultLanguage: 'en',
+      editorHref: '/editor',
+      selectedBlock: null,
+    }, "{{ pages_by_type['service'].pages[0].name }}|{{ pages_by_type['service'].groups[0].name }}|{{ pages_by_type['service'].groups[0].pages[0].name }}");
+
+    expect(html).toBe('Personal colour consultation|Colour analysis|Personal colour consultation');
   });
 });
 

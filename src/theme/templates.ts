@@ -10,6 +10,32 @@ export interface ThemeTemplate {
   format: 'json' | 'liquid';
 }
 
+export type PageTypeResourceSort =
+  | 'weight'
+  | 'name'
+  | 'created_at'
+  | 'updated_at'
+  | 'published_at';
+
+export interface PageTypeResource {
+  key: string;
+  page_type: string;
+  limit: number;
+  sort: PageTypeResourceSort;
+  order: 'asc' | 'desc';
+  group_by?: {
+    tag_taxonomy: string;
+    include_untagged: boolean;
+  };
+}
+
+const PAGE_TYPE_RESOURCE = /^[a-z][a-z0-9_-]{0,63}$/;
+const PAGE_TYPE_RESOURCE_SORTS = new Set<PageTypeResourceSort>([
+  'weight', 'name', 'created_at', 'updated_at', 'published_at',
+]);
+const MAX_PAGE_TYPE_RESOURCES = 20;
+const MAX_RESOURCE_PAGES = 500;
+
 export async function themeTemplates(
   env: PluginEnv,
   theme: ThemeDefinition,
@@ -84,6 +110,82 @@ export async function templateSections(
       blockIndex: referencedBlockIndex(section),
       settings: isRecord(section.settings) ? section.settings : {},
     }];
+  });
+}
+
+/**
+ * Page collections a JSON template needs in addition to the page being
+ * rendered. The declaration is deliberately data-only: validating it here
+ * gives the editor and the public renderer one bounded query plan to execute.
+ */
+export async function templatePageTypeResources(
+  template: ThemeTemplate,
+  store: ThemeStore,
+): Promise<PageTypeResource[]> {
+  if (template.format !== 'json') return [];
+
+  let definition: unknown;
+  try {
+    definition = JSON.parse(await store.read(template.path));
+  } catch {
+    throw new Error(`Invalid JSON theme template: ${template.id}`);
+  }
+  if (!isRecord(definition)) throw new Error(`Invalid theme template: ${template.id}`);
+  if (definition.resources === undefined) return [];
+  if (!isRecord(definition.resources)) {
+    throw new Error(`Invalid resources declaration in template: ${template.id}`);
+  }
+  const declared = definition.resources.pages_by_type;
+  if (declared === undefined) return [];
+  if (!isRecord(declared)) {
+    throw new Error(`Invalid resources.pages_by_type declaration in template: ${template.id}`);
+  }
+
+  const entries = Object.entries(declared);
+  if (entries.length > MAX_PAGE_TYPE_RESOURCES) {
+    throw new Error(`Template ${template.id} declares more than ${MAX_PAGE_TYPE_RESOURCES} page resources`);
+  }
+
+  let total = 0;
+  return entries.map(([key, value]) => {
+    if (!PAGE_TYPE_RESOURCE.test(key) || !isRecord(value)) {
+      throw new Error(`Invalid pages_by_type resource ${key} in template: ${template.id}`);
+    }
+    const limit = value.limit;
+    const sort = value.sort;
+    const order = value.order;
+    const rawGroupBy = value.group_by;
+    let groupBy: PageTypeResource['group_by'];
+    if (rawGroupBy !== undefined) {
+      if (!isRecord(rawGroupBy)
+        || typeof rawGroupBy.tag_taxonomy !== 'string'
+        || !PAGE_TYPE_RESOURCE.test(rawGroupBy.tag_taxonomy)
+        || (rawGroupBy.include_untagged !== undefined
+          && typeof rawGroupBy.include_untagged !== 'boolean')) {
+        throw new Error(`Invalid pages_by_type resource ${key} in template: ${template.id}`);
+      }
+      groupBy = {
+        tag_taxonomy: rawGroupBy.tag_taxonomy,
+        include_untagged: rawGroupBy.include_untagged === true,
+      };
+    }
+    if (!Number.isInteger(limit) || Number(limit) < 1 || Number(limit) > MAX_RESOURCE_PAGES
+      || typeof sort !== 'string' || !PAGE_TYPE_RESOURCE_SORTS.has(sort as PageTypeResourceSort)
+      || (order !== 'asc' && order !== 'desc')) {
+      throw new Error(`Invalid pages_by_type resource ${key} in template: ${template.id}`);
+    }
+    total += Number(limit);
+    if (total > MAX_RESOURCE_PAGES) {
+      throw new Error(`Template ${template.id} requests more than ${MAX_RESOURCE_PAGES} resource pages`);
+    }
+    return {
+      key,
+      page_type: key,
+      limit: Number(limit),
+      sort: sort as PageTypeResourceSort,
+      order,
+      ...(groupBy ? { group_by: groupBy } : {}),
+    };
   });
 }
 
