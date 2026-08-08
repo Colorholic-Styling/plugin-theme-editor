@@ -101,6 +101,41 @@ none is compiled into the editor. The initial client view contains an
 HTML-escaped JSON editor state; changing the focused block reads that local
 state and does not call the plugin or CMS.
 
+A JSON route template can declare page-backed data it needs outside the page
+being previewed. The editor validates the names, sort fields, directions and
+bounds, verifies that every page type is approved, then loads all collections
+through one `/__cms/pages/list-batch` request:
+
+```json
+"resources": {
+  "pages_by_type": {
+    "service": {
+      "limit": 60,
+      "sort": "weight",
+      "order": "asc",
+      "group_by": {
+        "tag_taxonomy": "categories",
+        "include_untagged": true
+      }
+    },
+    "team_member": { "limit": 60, "sort": "weight", "order": "asc" }
+  }
+}
+```
+
+Each result is a resource object. Liquid reads its flat list from `.pages` and,
+when `group_by` is declared, its tag buckets from `.groups`:
+
+```liquid
+{% for page in pages_by_type['service'].pages %}...{% endfor %}
+{% for group in pages_by_type['service'].groups %}
+  {{ group.name }}
+  {% for page in group.pages %}...{% endfor %}
+{% endfor %}
+```
+
+The declaration limit is 20 resources and 500 selected pages in total.
+
 The theme decides how a CMS block reaches the page, so selection overlays are
 attached two ways:
 

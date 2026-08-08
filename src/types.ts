@@ -43,11 +43,33 @@ export interface ContentMeta {
   default_language: string;
 }
 
+export interface ThemePageResourceTag {
+  id: number;
+  slug: string;
+  name: string;
+  weight: number;
+  taxonomy_slug: string;
+  parent_tag: number | null;
+  created_at: string;
+  updated_at: string;
+  lect: Record<string, unknown>;
+}
+
+export interface ThemePageResourceCollection {
+  pages: CmsPage[];
+  groups: Array<{
+    tag: ThemePageResourceTag | null;
+    pages: CmsPage[];
+  }>;
+}
+
 export interface ThemeRenderContext {
   page: CmsPage;
   settings: CmsPage | null;
   pages: CmsPage[];
   news: CmsPage[];
+  /** Pages loaded in one bounded batch from the JSON template declaration. */
+  pagesByType?: Record<string, ThemePageResourceCollection>;
   language: string;
   languages: string[];
   defaultLanguage: string;

@@ -26,15 +26,15 @@
     "kv:setup:preview": "cms-plugin-kv-setup --preview"
   },
   "dependencies": {
-    "@lionrockjs/worker-cms-plugin": "0.3.4"
+    "@lionrockjs/worker-cms-plugin": "0.3.5"
   },
   "devDependencies": {
-    "@cloudflare/workers-types": "^5.20260804.1",
-    "@types/node": "^26.1.2",
+    "@cloudflare/workers-types": "^5.20260808.1",
+    "@types/node": "^26.2.0",
     "esbuild": "^0.28.1",
-    "happy-dom": "^20.11.1",
+    "happy-dom": "^20.11.2",
     "typescript": "^7.0.2",
     "vitest": "^4.1.10",
-    "wrangler": "^4.118.0"
+    "wrangler": "^4.120.0"
   }
 }

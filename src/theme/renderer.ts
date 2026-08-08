@@ -1,7 +1,7 @@
 import type { CmsPage } from '@lionrockjs/worker-cms-plugin';
 import { ADMIN_BASE } from '../constants';
 import { editorFields, type EditorField } from '../editor-model';
-import type { PluginEnv, ThemeRenderContext } from '../types';
+import type { PluginEnv, ThemePageResourceTag, ThemeRenderContext } from '../types';
 import { mediaUrl, plainText, richText, safeUrl } from './html';
 import { attr, indexedBlocks, items, localized, text, truthy, type Lect } from './lect';
 import { renderThemeSource } from './liquid';
@@ -180,6 +180,22 @@ function previewRenderData(
   const pageSubtitle = localized(context.page.lect, 'subtitle', chain);
   const articles = context.news.map((articlePage) => newsArticleModel(articlePage, chain));
   const article = newsArticleModel(context.page, chain);
+  const bookingUrl = safeUrl(context.settings ? text(context.settings.lect, 'booking_url', chain) : '')
+    || safeUrl(runtime.bookingUrl);
+  const pagesByType = Object.fromEntries(Object.entries(context.pagesByType ?? {}).map(
+    ([pageType, collection]) => [pageType, {
+      pages: collection.pages.map((page) => pageResourceModel(page, chain, bookingUrl)),
+      groups: collection.groups.map((group) => {
+        const tag = group.tag ? pageResourceTagModel(group.tag, chain) : null;
+        return {
+          key: tag?.slug ?? 'untagged',
+          name: tag?.name ?? labels.other,
+          tag,
+          pages: group.pages.map((page) => pageResourceModel(page, chain, bookingUrl)),
+        };
+      }),
+    }],
+  ));
   return {
     lang: context.language === 'mis' ? context.defaultLanguage : context.language,
     language: context.language,
@@ -209,6 +225,7 @@ function previewRenderData(
     heading: pageTitle,
     intro: pageSubtitle || labels.newsIntro,
     articles,
+    pages_by_type: pagesByType,
     hasArticles: articles.length > 0,
     article,
     code: attr(context.page.lect, 'code') || String(context.page.id),
@@ -580,6 +597,53 @@ function newsArticleModel(page: CmsPage, chain: string[]): Record<string, unknow
   };
 }
 
+/** Stable, flat Liquid model shared by all declared page-type collections. */
+function pageResourceModel(page: CmsPage, chain: string[], bookingUrl: string): Record<string, unknown> {
+  const title = localized(page.lect, 'title', chain) || page.name;
+  const body = localized(page.lect, 'body', chain);
+  const summary = localized(page.lect, 'summary', chain) || plainText(body, 180);
+  const booking = button(page.lect, 'booking', chain, bookingUrl);
+  const pageHref = '#';
+  return {
+    id: page.id,
+    page_type: page.page_type,
+    name: title,
+    title,
+    slug: page.slug,
+    href: page.page_type === 'service' && booking.href ? booking.href : pageHref,
+    detailHref: pageHref,
+    summary,
+    description: summary,
+    bodyHtml: richText(body),
+    picture: mediaUrl(text(page.lect, 'picture', chain)),
+    role: localized(page.lect, 'role', chain),
+    bio: localized(page.lect, 'bio', chain)
+      || localized(page.lect, 'summary', chain)
+      || plainText(body, 160),
+    category: localized(page.lect, 'category', chain) || attr(page.lect, 'category'),
+    duration: localized(page.lect, 'duration', chain) || attr(page.lect, 'duration'),
+    price: localized(page.lect, 'price', chain) || attr(page.lect, 'price'),
+    label: booking.label,
+    booking,
+    dateText: page.start?.slice(0, 10) || page.created_at.slice(0, 10),
+    dateIso: page.start || page.created_at,
+  };
+}
+
+function pageResourceTagModel(
+  tag: ThemePageResourceTag,
+  chain: string[],
+): Record<string, unknown> & { slug: string; name: string } {
+  return {
+    id: tag.id,
+    slug: tag.slug,
+    name: localized(tag.lect, 'name', chain) || tag.name,
+    weight: tag.weight,
+    taxonomy_slug: tag.taxonomy_slug,
+    parent_tag: tag.parent_tag,
+  };
+}
+
 function blockViewModels(
   page: CmsPage,
   chain: string[],
@@ -871,6 +935,7 @@ function strings(language: string) {
     address: 'Address',
     contact: 'Contact',
     from: 'from',
+    other: 'Other',
   };
   if (!language.startsWith('zh')) return english;
   return {
@@ -884,6 +949,7 @@ function strings(language: string) {
     hours: '營業時間',
     address: '地址',
     contact: '聯絡我們',
+    other: '其他',
   };
 }
 

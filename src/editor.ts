@@ -50,6 +50,7 @@ import {
 import {
   availableSectionTypes,
   selectThemeTemplate,
+  templatePageTypeResources,
   templateSections,
   themeTemplates,
 } from './theme/templates';
@@ -61,7 +62,7 @@ import {
   themeStore,
   type ThemeDefinition,
 } from './themes';
-import type { PluginEnv } from './types';
+import type { PluginEnv, ThemePageResourceCollection } from './types';
 
 export { ADMIN_BASE, PLUGIN_ID };
 
@@ -557,23 +558,35 @@ async function previewData(
     page.page_type ?? '',
   );
   if (!selectedTemplate) return Response.json({ error: 'template not found' }, { status: 404 });
+  const resources = await templatePageTypeResources(selectedTemplate, store);
+  const unreadable = resources.find((resource) => !meta.page_types.includes(resource.page_type));
+  if (unreadable) {
+    return Response.json({
+      error: `template requests unavailable page type: ${unreadable.page_type}`,
+    }, { status: 400 });
+  }
   const language = selectedLanguage(url, meta.languages, meta.default_language);
   const selectedBlock = selectedBlockFrom(url, page);
   const cms = cmsClient(env);
-  const [settingsResult, newsResult] = await Promise.all([
+  const [settingsResult, resourceResult] = await Promise.all([
     meta.page_types.includes('site_settings')
       ? cms.list('site_settings', { limit: 1 }).catch(() => ({ pages: [], total: 0 }))
       : Promise.resolve({ pages: [] as CmsPage[], total: 0 }),
-    meta.page_types.includes('news')
-      ? cms.list('news', { limit: 12 }).catch(() => ({ pages: [], total: 0 }))
-      : Promise.resolve({ pages: [] as CmsPage[], total: 0 }),
+    resources.length
+      ? cms.listMany(resources)
+      : meta.page_types.includes('news')
+        ? cms.list('news', { limit: 12 })
+          .then(({ pages }) => ({ pages_by_type: { news: { pages, groups: [] } } }))
+          .catch(() => ({ pages_by_type: {} as Record<string, ThemePageResourceCollection> }))
+        : Promise.resolve({ pages_by_type: {} as Record<string, ThemePageResourceCollection> }),
   ]);
 
   const renderContext = {
     page,
     settings: settingsResult.pages[0] ?? null,
     pages: [page],
-    news: newsResult.pages,
+    news: resourceResult.pages_by_type.news?.pages ?? [],
+    pagesByType: resourceResult.pages_by_type,
     language,
     languages: meta.languages,
     defaultLanguage: meta.default_language,
